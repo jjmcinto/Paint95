@@ -1,0 +1,548 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXContainerItemProxy section */
+		4DDF78C32E1F9B3E001E0091 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4DDF78A92E1F9B3B001E0091 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 4DDF78B02E1F9B3B001E0091;
+			remoteInfo = Paint95;
+		};
+		4DDF78CD2E1F9B3E001E0091 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4DDF78A92E1F9B3B001E0091 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 4DDF78B02E1F9B3B001E0091;
+			remoteInfo = Paint95;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		4DDF78B12E1F9B3B001E0091 /* Paint95.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Paint95.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		4DDF78C22E1F9B3E001E0091 /* Paint95Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = Paint95Tests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		4DDF78CC2E1F9B3E001E0091 /* Paint95UITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = Paint95UITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		4DDF78B32E1F9B3B001E0091 /* Paint95 */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Paint95;
+			sourceTree = "<group>";
+		};
+		4DDF78C52E1F9B3E001E0091 /* Paint95Tests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Paint95Tests;
+			sourceTree = "<group>";
+		};
+		4DDF78CF2E1F9B3E001E0091 /* Paint95UITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Paint95UITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		4DDF78AE2E1F9B3B001E0091 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4DDF78BF2E1F9B3E001E0091 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4DDF78C92E1F9B3E001E0091 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		4DDF78A82E1F9B3B001E0091 = {
+			isa = PBXGroup;
+			children = (
+				4DDF78B32E1F9B3B001E0091 /* Paint95 */,
+				4DDF78C52E1F9B3E001E0091 /* Paint95Tests */,
+				4DDF78CF2E1F9B3E001E0091 /* Paint95UITests */,
+				4DDF78B22E1F9B3B001E0091 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		4DDF78B22E1F9B3B001E0091 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				4DDF78B12E1F9B3B001E0091 /* Paint95.app */,
+				4DDF78C22E1F9B3E001E0091 /* Paint95Tests.xctest */,
+				4DDF78CC2E1F9B3E001E0091 /* Paint95UITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		4DDF78B02E1F9B3B001E0091 /* Paint95 */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 4DDF78D62E1F9B3E001E0091 /* Build configuration list for PBXNativeTarget "Paint95" */;
+			buildPhases = (
+				4DDF78AD2E1F9B3B001E0091 /* Sources */,
+				4DDF78AE2E1F9B3B001E0091 /* Frameworks */,
+				4DDF78AF2E1F9B3B001E0091 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				4DDF78B32E1F9B3B001E0091 /* Paint95 */,
+			);
+			name = Paint95;
+			packageProductDependencies = (
+			);
+			productName = Paint95;
+			productReference = 4DDF78B12E1F9B3B001E0091 /* Paint95.app */;
+			productType = "com.apple.product-type.application";
+		};
+		4DDF78C12E1F9B3E001E0091 /* Paint95Tests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 4DDF78D92E1F9B3E001E0091 /* Build configuration list for PBXNativeTarget "Paint95Tests" */;
+			buildPhases = (
+				4DDF78BE2E1F9B3E001E0091 /* Sources */,
+				4DDF78BF2E1F9B3E001E0091 /* Frameworks */,
+				4DDF78C02E1F9B3E001E0091 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				4DDF78C42E1F9B3E001E0091 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				4DDF78C52E1F9B3E001E0091 /* Paint95Tests */,
+			);
+			name = Paint95Tests;
+			packageProductDependencies = (
+			);
+			productName = Paint95Tests;
+			productReference = 4DDF78C22E1F9B3E001E0091 /* Paint95Tests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		4DDF78CB2E1F9B3E001E0091 /* Paint95UITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 4DDF78DC2E1F9B3E001E0091 /* Build configuration list for PBXNativeTarget "Paint95UITests" */;
+			buildPhases = (
+				4DDF78C82E1F9B3E001E0091 /* Sources */,
+				4DDF78C92E1F9B3E001E0091 /* Frameworks */,
+				4DDF78CA2E1F9B3E001E0091 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				4DDF78CE2E1F9B3E001E0091 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				4DDF78CF2E1F9B3E001E0091 /* Paint95UITests */,
+			);
+			name = Paint95UITests;
+			packageProductDependencies = (
+			);
+			productName = Paint95UITests;
+			productReference = 4DDF78CC2E1F9B3E001E0091 /* Paint95UITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		4DDF78A92E1F9B3B001E0091 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1630;
+				LastUpgradeCheck = 1630;
+				TargetAttributes = {
+					4DDF78B02E1F9B3B001E0091 = {
+						CreatedOnToolsVersion = 16.3;
+					};
+					4DDF78C12E1F9B3E001E0091 = {
+						CreatedOnToolsVersion = 16.3;
+						TestTargetID = 4DDF78B02E1F9B3B001E0091;
+					};
+					4DDF78CB2E1F9B3E001E0091 = {
+						CreatedOnToolsVersion = 16.3;
+						TestTargetID = 4DDF78B02E1F9B3B001E0091;
+					};
+				};
+			};
+			buildConfigurationList = 4DDF78AC2E1F9B3B001E0091 /* Build configuration list for PBXProject "Paint95" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 4DDF78A82E1F9B3B001E0091;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 4DDF78B22E1F9B3B001E0091 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				4DDF78B02E1F9B3B001E0091 /* Paint95 */,
+				4DDF78C12E1F9B3E001E0091 /* Paint95Tests */,
+				4DDF78CB2E1F9B3E001E0091 /* Paint95UITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		4DDF78AF2E1F9B3B001E0091 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4DDF78C02E1F9B3E001E0091 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4DDF78CA2E1F9B3E001E0091 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		4DDF78AD2E1F9B3B001E0091 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4DDF78BE2E1F9B3E001E0091 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4DDF78C82E1F9B3E001E0091 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		4DDF78C42E1F9B3E001E0091 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 4DDF78B02E1F9B3B001E0091 /* Paint95 */;
+			targetProxy = 4DDF78C32E1F9B3E001E0091 /* PBXContainerItemProxy */;
+		};
+		4DDF78CE2E1F9B3E001E0091 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 4DDF78B02E1F9B3B001E0091 /* Paint95 */;
+			targetProxy = 4DDF78CD2E1F9B3E001E0091 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		4DDF78D42E1F9B3E001E0091 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.4;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		4DDF78D52E1F9B3E001E0091 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.4;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		4DDF78D72E1F9B3E001E0091 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Paint95/Paint95.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMainStoryboardFile = Main;
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = DragonCatPictures.Paint95;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		4DDF78D82E1F9B3E001E0091 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Paint95/Paint95.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMainStoryboardFile = Main;
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = DragonCatPictures.Paint95;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		4DDF78DA2E1F9B3E001E0091 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.4;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = DragonCatPictures.Paint95Tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Paint95.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Paint95";
+			};
+			name = Debug;
+		};
+		4DDF78DB2E1F9B3E001E0091 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.4;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = DragonCatPictures.Paint95Tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Paint95.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Paint95";
+			};
+			name = Release;
+		};
+		4DDF78DD2E1F9B3E001E0091 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = DragonCatPictures.Paint95UITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = Paint95;
+			};
+			name = Debug;
+		};
+		4DDF78DE2E1F9B3E001E0091 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = DragonCatPictures.Paint95UITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = Paint95;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		4DDF78AC2E1F9B3B001E0091 /* Build configuration list for PBXProject "Paint95" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4DDF78D42E1F9B3E001E0091 /* Debug */,
+				4DDF78D52E1F9B3E001E0091 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		4DDF78D62E1F9B3E001E0091 /* Build configuration list for PBXNativeTarget "Paint95" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4DDF78D72E1F9B3E001E0091 /* Debug */,
+				4DDF78D82E1F9B3E001E0091 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		4DDF78D92E1F9B3E001E0091 /* Build configuration list for PBXNativeTarget "Paint95Tests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4DDF78DA2E1F9B3E001E0091 /* Debug */,
+				4DDF78DB2E1F9B3E001E0091 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		4DDF78DC2E1F9B3E001E0091 /* Build configuration list for PBXNativeTarget "Paint95UITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4DDF78DD2E1F9B3E001E0091 /* Debug */,
+				4DDF78DE2E1F9B3E001E0091 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 4DDF78A92E1F9B3B001E0091 /* Project object */;
+}
