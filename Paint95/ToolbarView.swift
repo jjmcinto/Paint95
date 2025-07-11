@@ -10,7 +10,7 @@ class ToolbarView: NSView {
 
     let tools: [PaintTool] = [
         .pencil, .brush, .eraser, .fill, .text,
-        .line, .curve, .rectangle, .ellipse, .roundRect,
+        .line, .curve, .rect, .ellipse, .roundRect,
         .colorPicker, .select, .zoom
     ]
 
