@@ -79,13 +79,14 @@ class CanvasView: NSView {
             path.lineWidth = strokeWidth
         }
 
+        image.lockFocus()
+
         if currentTool == .eraser {
             NSColor.white.setStroke()
         } else {
             currentColor.setStroke()
         }
-
-        image.lockFocus()
+        
         path.stroke()
         image.unlockFocus()
 
