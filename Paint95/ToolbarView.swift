@@ -19,11 +19,15 @@ class ToolbarView: NSView {
     let toolIcons: [PaintTool: String] = [
         .pencil: "pencil",
         .brush: "brush",
+        .curve: "curve",
         .eraser: "eraser",
         .line: "line",
         .rect: "rect",
         .ellipse: "ellipse",
         .fill: "fill",
+        .roundRect: "roundRect",
+        .select: "select",
+        .text: "text",
         .colorPicker: "colorPicker"
     ]
 
