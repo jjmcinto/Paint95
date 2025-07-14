@@ -5,9 +5,17 @@ protocol ColorPaletteDelegate: AnyObject {
     func colorSelected(_ color: NSColor)
 }
 
+
+
 class ColorPaletteView: NSView {
     weak var delegate: ColorPaletteDelegate?
 
+    var selectedColor: NSColor = .black {
+        didSet {
+            needsDisplay = true
+        }
+    }
+    
     let colors: [NSColor] = [
         .black, .darkGray, .gray, .white,
         .red, .green, .blue, .cyan,

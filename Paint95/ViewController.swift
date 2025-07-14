@@ -1,7 +1,7 @@
 // ViewController.swift
 import Cocoa  // ✅ Import AppKit for NSViewController, NSColor, etc.
 
-class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate {
+class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, CanvasViewDelegate {
 
     @IBOutlet weak var canvasView: CanvasView!
     @IBOutlet weak var toolbarView: ToolbarView!
@@ -11,6 +11,7 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate {
         super.viewDidLoad()
         toolbarView.delegate = self
         colorPaletteView.delegate = self
+        canvasView.delegate = self
     }
 
     // MARK: - ToolbarDelegate
@@ -26,5 +27,10 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate {
     // Optional: Clear button or menu action
     @IBAction func clearCanvas(_ sender: Any) {
         canvasView.clearCanvas()
+    }
+    func didPickColor(_ color: NSColor) {
+        canvasView.currentColor = color
+        colorPaletteView.selectedColor = color
+        colorPaletteView.needsDisplay = true
     }
 }
