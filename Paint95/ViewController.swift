@@ -6,6 +6,7 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
     @IBOutlet weak var canvasView: CanvasView!
     @IBOutlet weak var toolbarView: ToolbarView!
     @IBOutlet weak var colorPaletteView: ColorPaletteView!
+    @IBOutlet weak var colorSwatchView: ColorSwatchView!
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -22,6 +23,7 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
     // MARK: - ColorPaletteDelegate
     func colorSelected(_ color: NSColor) {
         canvasView.currentColor = color
+        colorSwatchView.color = color
     }
 
     // Optional: Clear button or menu action
@@ -32,5 +34,6 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
         canvasView.currentColor = color
         colorPaletteView.selectedColor = color
         colorPaletteView.needsDisplay = true
+        colorSwatchView.color = color
     }
 }
