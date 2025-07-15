@@ -10,6 +10,7 @@ class ColorSwatchView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        print("🎨 Drawing swatch with color:", color)
 
         color.setFill()
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 4), xRadius: 6, yRadius: 6)

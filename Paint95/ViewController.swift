@@ -10,9 +10,19 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        NotificationCenter.default.addObserver(self, selector: #selector(updateColorSwatch(_:)), name: .colorPicked, object: nil)
+        
         toolbarView.delegate = self
         colorPaletteView.delegate = self
         canvasView.delegate = self
+    }
+    
+    @objc func updateColorSwatch(_ notification: Notification) {
+        if let color = notification.object as? NSColor {
+            print("update swatch:", color)
+            colorSwatchView.color = color
+            print("colorSwatchView.color:", colorSwatchView.color)
+        }
     }
 
     // MARK: - ToolbarDelegate
@@ -25,7 +35,7 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
         canvasView.currentColor = color
         colorSwatchView.color = color
     }
-
+    
     // Optional: Clear button or menu action
     @IBAction func clearCanvas(_ sender: Any) {
         canvasView.clearCanvas()

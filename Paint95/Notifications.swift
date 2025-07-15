@@ -1,2 +1,4 @@
-// Tool.swift
-//enum PaintTool { case pencil, brush, eraser, fill, text, line, curve, rect, ellipse, roundRect, colorPicker, select, zoom }
+import Foundation
+extension Notification.Name {
+    static let colorPicked = Notification.Name("colorPicked")
+}

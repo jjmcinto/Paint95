@@ -13,7 +13,7 @@ class ToolbarView: NSView {
     let tools: [PaintTool] = [
         .pencil, .brush, .eraser, .fill, .text,
         .line, .curve, .rect, .ellipse, .roundRect,
-        .colorPicker, .select, .zoom
+        .eyeDropper, .select, .zoom
     ]
     
     let toolIcons: [PaintTool: String] = [
@@ -28,7 +28,7 @@ class ToolbarView: NSView {
         .roundRect: "roundRect",
         .select: "select",
         .text: "text",
-        .colorPicker: "colorPicker"
+        .eyeDropper: "eyeDropper"
     ]
 
     override func draw(_ dirtyRect: NSRect) {
