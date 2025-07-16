@@ -4,6 +4,13 @@ protocol CanvasViewDelegate: AnyObject {
     func didPickColor(_ color: NSColor)
 }
 
+extension CanvasView: NSTextViewDelegate {
+    func textDidEndEditing(_ notification: Notification) {
+        guard let tv = textView else { return }
+        commitTextView(tv)
+    }
+}
+
 class CanvasView: NSView {
 
     weak var delegate: CanvasViewDelegate?
@@ -25,8 +32,12 @@ class CanvasView: NSView {
     var curveEnd: NSPoint = .zero
     var control1: NSPoint = .zero
     var control2: NSPoint = .zero
-
     
+    //For Text Tool
+    var isCreatingText = false
+    var textBoxRect: NSRect = .zero
+    var textView: NSTextView?
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
@@ -81,10 +92,20 @@ class CanvasView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        //where applicable, end text editing
+        if let tv = textView, tv.window?.firstResponder == tv {
+            window?.makeFirstResponder(nil) // Triggers textDidEndEditing
+            return
+        }
+        
         let point = convert(event.locationInWindow, from: nil)
         initializeCanvasIfNeeded()
 
         switch currentTool {
+        case .text:
+            startPoint = point
+            isCreatingText = true
+            
         case .eyeDropper:
             if let picked = pickColor(at: point) {
                 currentColor = picked
@@ -125,6 +146,13 @@ class CanvasView: NSView {
         let point = convert(event.locationInWindow, from: nil)
 
         switch currentTool {
+        case .text:
+            if isCreatingText {
+                let current = point
+                textBoxRect = rectBetween(startPoint, and: current)
+                needsDisplay = true
+            }
+
         case .pencil, .brush:
             currentPath?.line(to: point)
             drawCurrentPathToCanvas()
@@ -164,6 +192,12 @@ class CanvasView: NSView {
         let point = convert(event.locationInWindow, from: nil)
 
         switch currentTool {
+        case .text:
+            if isCreatingText {
+                createTextView(in: textBoxRect)
+                isCreatingText = false
+            }
+
         case .pencil, .brush, .eraser:
             currentPath = nil
 
@@ -204,7 +238,48 @@ class CanvasView: NSView {
             break
         }
     }
+    
+    func commitTextView(_ tv: NSTextView) {
+        let text = tv.string
+        guard !text.isEmpty else { return }
+        
+        initializeCanvasIfNeeded()
+        canvasImage?.lockFocus()
 
+        let textAttributes: [NSAttributedString.Key: Any] = [
+            .font: tv.font ?? NSFont.systemFont(ofSize: 14),
+            .foregroundColor: currentColor
+        ]
+        
+        let attributed = NSAttributedString(string: text, attributes: textAttributes)
+        attributed.draw(in: tv.frame)
+
+        canvasImage?.unlockFocus()
+        tv.removeFromSuperview()
+        textView = nil
+        needsDisplay = true
+    }
+    
+    func createTextView(in rect: NSRect) {
+        textView?.removeFromSuperview()
+        
+        let tv = CanvasTextView(frame: rect)
+        tv.font = NSFont.systemFont(ofSize: 14)
+        tv.backgroundColor = NSColor.white
+        tv.textColor = currentColor
+        tv.delegate = self
+        tv.isEditable = true
+        tv.isSelectable = true
+        tv.wantsLayer = true
+        tv.layer?.borderColor = NSColor.gray.cgColor
+        tv.layer?.borderWidth = 1
+
+        addSubview(tv)
+        window?.makeFirstResponder(tv)
+
+        textView = tv
+    }
+    
     private func drawShape(to image: NSImage?) {
         guard let image = image else { return }
         guard let path = shapePathBetween(startPoint, endPoint) else { return }
