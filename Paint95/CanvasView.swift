@@ -39,6 +39,12 @@ class CanvasView: NSView {
             color.setStroke()
             path.stroke()
         }
+        
+        // Optional: draw preview shape if in drawing mode
+        if let previewPath = currentPath {
+            currentColor.setStroke()
+            previewPath.stroke()
+        }
 
         if currentTool == .curve {
             let path = NSBezierPath()
@@ -207,6 +213,7 @@ class CanvasView: NSView {
         currentColor.set()
         path.lineWidth = 2
         path.stroke()
+        drawnPaths.append((path.copy() as! NSBezierPath, currentColor))
         image.unlockFocus()
     }
     
@@ -261,35 +268,33 @@ class CanvasView: NSView {
         // Configure path appearance before drawing
         path.lineCapStyle = .butt      // No rounded ends
         path.lineJoinStyle = .miter    // Sharp corners
-
-        canvasImage?.lockFocus()
+        
+        let finalPath = path.copy() as! NSBezierPath
+        var strokeColor: NSColor
+        var lineWidth: CGFloat
 
         switch currentTool {
         case .pencil:
-            currentColor.set()
-            path.lineWidth = 1
-            path.stroke()
-            drawnPaths.append((path.copy() as! NSBezierPath, currentColor))
+            strokeColor = currentColor
+            lineWidth = 1
 
         case .brush:
-            currentColor.set()
-            path.lineWidth = 5
-            path.stroke()
-            drawnPaths.append((path.copy() as! NSBezierPath, currentColor))
+            strokeColor = currentColor
+            lineWidth = 5
 
         case .eraser:
             path.lineCapStyle = .butt
             path.lineJoinStyle = .miter
-            NSColor.white.set()
-            path.lineWidth = 15
-            path.stroke()
-            // No need to add to drawnPaths
+            strokeColor = .white
+            lineWidth = 15
 
         default:
-            break
+            return  // don't accidentally fall through
         }
 
-        canvasImage?.unlockFocus()
+        finalPath.lineWidth = lineWidth
+        drawnPaths.append((path: finalPath, color: strokeColor))
+        currentPath = nil
         needsDisplay = true
     }
     

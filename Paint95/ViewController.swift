@@ -19,9 +19,7 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
     
     @objc func updateColorSwatch(_ notification: Notification) {
         if let color = notification.object as? NSColor {
-            print("update swatch:", color)
             colorSwatchView.color = color
-            print("colorSwatchView.color:", colorSwatchView.color)
         }
     }
 
