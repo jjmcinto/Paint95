@@ -14,9 +14,19 @@ class CanvasView: NSView {
     var canvasImage: NSImage? = nil
     var currentPath: NSBezierPath?
     var startPoint: NSPoint = .zero
+    var endPoint: NSPoint = .zero
+    var isDrawingShape: Bool = false
 
     var drawnPaths: [(path: NSBezierPath, color: NSColor)] = []
 
+    // For curve tool phases
+    var curvePhase = 0
+    var curveStart: NSPoint = .zero
+    var curveEnd: NSPoint = .zero
+    var control1: NSPoint = .zero
+    var control2: NSPoint = .zero
+
+    
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
@@ -28,6 +38,39 @@ class CanvasView: NSView {
         for (path, color) in drawnPaths {
             color.setStroke()
             path.stroke()
+        }
+
+        if currentTool == .curve {
+            let path = NSBezierPath()
+            path.lineWidth = 2
+            currentColor.set()
+
+            switch curvePhase {
+            case 0:
+                if curveStart != curveEnd || curveStart != .zero {
+                    path.move(to: curveStart)
+                    path.line(to: curveEnd)
+                    path.stroke()
+                }
+
+            case 1:
+                path.move(to: curveStart)
+                path.curve(to: curveEnd, controlPoint1: control1, controlPoint2: control1)
+                path.stroke()
+
+            case 2:
+                path.move(to: curveStart)
+                path.curve(to: curveEnd, controlPoint1: control1, controlPoint2: control2)
+                path.stroke()
+
+            default:
+                break
+            }
+        } else if isDrawingShape {
+            currentColor.set()
+            let shapePath = shapePathBetween(startPoint, endPoint)
+            shapePath?.lineWidth = 2
+            shapePath?.stroke()
         }
     }
 
@@ -50,6 +93,23 @@ class CanvasView: NSView {
         case .fill:
             floodFill(from: point, with: currentColor)
 
+        case .curve:
+            switch curvePhase {
+            case 0:
+                curveStart = point
+                curveEnd = point
+            case 1, 2:
+                // Do nothing here — let mouseDragged preview
+                break
+            default:
+                break
+            }
+
+        case .line, .rect, .roundRect, .ellipse:
+            startPoint = point
+            endPoint = point
+            isDrawingShape = true
+
         default:
             break
         }
@@ -68,10 +128,26 @@ class CanvasView: NSView {
         case .eraser:
             currentPath?.line(to: point)
             drawCurrentPathToCanvas()
-            eraseDot(at: point)         // 💥 Erase white pixel area directly
-            erasePaths(at: point)       // ✂️ Remove any intersecting drawn paths
+            eraseDot(at: point)
             currentPath = NSBezierPath()
             currentPath?.move(to: point)
+
+        case .line, .rect, .roundRect, .ellipse:
+            endPoint = point
+            needsDisplay = true
+
+        case .curve:
+            switch curvePhase {
+            case 0:
+                curveEnd = point
+            case 1:
+                control1 = point
+            case 2:
+                control2 = point
+            default:
+                break
+            }
+            needsDisplay = true
 
         default:
             break
@@ -79,9 +155,98 @@ class CanvasView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        currentPath = nil
+        let point = convert(event.locationInWindow, from: nil)
+
+        switch currentTool {
+        case .pencil, .brush, .eraser:
+            currentPath = nil
+
+        case .line, .rect, .roundRect, .ellipse:
+            drawShape(to: canvasImage)
+            isDrawingShape = false
+            needsDisplay = true
+
+        case .curve:
+            switch curvePhase {
+            case 0:
+                curvePhase = 1
+            case 1:
+                control1 = point
+                curvePhase = 2
+            case 2:
+                control2 = point
+                // Draw final curve
+                let path = NSBezierPath()
+                path.move(to: curveStart)
+                path.curve(to: curveEnd, controlPoint1: control1, controlPoint2: control2)
+                canvasImage?.lockFocus()
+                currentColor.set()
+                path.lineWidth = 2
+                path.stroke()
+                canvasImage?.unlockFocus()
+                drawnPaths.append((path, currentColor))
+                curvePhase = 0
+                curveStart = .zero
+                curveEnd = .zero
+                isDrawingShape = false
+                needsDisplay = true
+            default:
+                break
+            }
+
+        default:
+            break
+        }
     }
 
+    private func drawShape(to image: NSImage?) {
+        guard let image = image else { return }
+        guard let path = shapePathBetween(startPoint, endPoint) else { return }
+
+        image.lockFocus()
+        currentColor.set()
+        path.lineWidth = 2
+        path.stroke()
+        image.unlockFocus()
+    }
+    
+    func rectBetween(_ p1: NSPoint, and p2: NSPoint) -> NSRect {
+            let origin = NSPoint(x: min(p1.x, p2.x), y: min(p1.y, p2.y))
+            let size = NSSize(width: abs(p2.x - p1.x), height: abs(p2.y - p1.y))
+            return NSRect(origin: origin, size: size)
+    }
+
+    private func shapePathBetween(_ p1: NSPoint, _ p2: NSPoint) -> NSBezierPath? {
+        let rect = rectBetween(p1, and: p2)
+        let path = NSBezierPath()
+
+        switch currentTool {
+        case .line:
+            path.move(to: p1)
+            path.line(to: p2)
+
+        case .rect:
+            path.appendRect(rect)
+
+        case .roundRect:
+            path.appendRoundedRect(rect, xRadius: 10, yRadius: 10)
+
+        case .ellipse:
+            path.appendOval(in: rect)
+
+        case .curve:
+            // Simple quadratic Bézier approximation for now
+            let controlPoint = NSPoint(x: (p1.x + p2.x) / 2, y: p1.y + 60)
+            path.move(to: p1)
+            path.curve(to: p2, controlPoint1: controlPoint, controlPoint2: controlPoint)
+
+        default:
+            return nil
+        }
+
+        return path
+    }
+    
     private func erasePaths(at point: NSPoint, radius: CGFloat = 7.5) {
         let eraserRect = NSRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)
         drawnPaths.removeAll { path, _ in
