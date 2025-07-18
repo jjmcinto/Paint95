@@ -37,6 +37,20 @@ class CanvasView: NSView {
     var isCreatingText = false
     var textBoxRect: NSRect = .zero
     var textView: NSTextView?
+    
+    //For Selection Tool
+    var selectionRect: NSRect?
+    var selectedImage: NSImage?
+    var isPasting: Bool = false
+    var pasteOrigin: NSPoint = .zero
+    var pastedImage: NSImage?
+    var pastedImageOrigin: NSPoint?
+    var isPastingImage: Bool = false
+    var isPastingActive: Bool = false
+    var pasteDragStartPoint: NSPoint?
+    var pasteDragOffset: NSPoint?
+    var pasteImageStartOrigin: NSPoint?
+    var isDraggingPastedImage: Bool = false
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
@@ -57,6 +71,14 @@ class CanvasView: NSView {
             previewPath.stroke()
         }
 
+        if let rect = selectionRect {
+            NSColor.black.setStroke()
+            let dashPattern: [CGFloat] = [5.0, 3.0]
+            let path = NSBezierPath(rect: rect)
+            path.setLineDash(dashPattern, count: dashPattern.count, phase: 0)
+            path.stroke()
+        }
+        
         if currentTool == .curve {
             let path = NSBezierPath()
             path.lineWidth = 2
@@ -89,23 +111,65 @@ class CanvasView: NSView {
             shapePath?.lineWidth = 2
             shapePath?.stroke()
         }
+        
+        if let image = pastedImage, let origin = pastedImageOrigin {
+            // Draw the pasted image at full opacity
+            image.draw(at: origin, from: .zero, operation: .sourceOver, fraction: 1.0)
+
+            // Draw selection rectangle around it
+            let rect = NSRect(origin: origin, size: image.size)
+            NSColor.keyboardFocusIndicatorColor.setStroke()
+            
+            let dash: [CGFloat] = [5, 3]
+            let selectionRect = NSBezierPath(rect: rect)
+            selectionRect.setLineDash(dash, count: dash.count, phase: 0)
+            selectionRect.lineWidth = 1
+            selectionRect.stroke()
+        }
+
     }
 
     override func mouseDown(with event: NSEvent) {
-        //where applicable, end text editing
+        // End text editing if applicable
         if let tv = textView, tv.window?.firstResponder == tv {
-            window?.makeFirstResponder(nil) // Triggers textDidEndEditing
+            window?.makeFirstResponder(nil)
             return
         }
-        
+
         let point = convert(event.locationInWindow, from: nil)
+
+        // Check if we’re in the middle of a paste preview and clicked on the image
+        if isPastingImage, let image = pastedImage, let origin = pastedImageOrigin {
+            let pasteRect = NSRect(origin: origin, size: image.size)
+            if pasteRect.contains(point) {
+                // Begin drag of paste preview
+                pasteDragStartPoint = point
+                pasteImageStartOrigin = origin
+                pasteDragOffset = NSPoint(x: point.x - origin.x, y: point.y - origin.y)
+                isDraggingPastedImage = true
+                return
+            } else {
+                // Commit paste if click is outside
+                commitPastedImage()
+                return
+            }
+        }
+
         initializeCanvasIfNeeded()
 
         switch currentTool {
+        case .select:
+            if !isPastingImage {
+                startPoint = point
+                selectionRect = nil
+                selectedImage = nil
+                self.window?.makeFirstResponder(self)
+            }
+
         case .text:
             startPoint = point
             isCreatingText = true
-            
+
         case .eyeDropper:
             if let picked = pickColor(at: point) {
                 currentColor = picked
@@ -125,9 +189,6 @@ class CanvasView: NSView {
             case 0:
                 curveStart = point
                 curveEnd = point
-            case 1, 2:
-                // Do nothing here — let mouseDragged preview
-                break
             default:
                 break
             }
@@ -145,11 +206,23 @@ class CanvasView: NSView {
     override func mouseDragged(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
 
+        if isDraggingPastedImage, let offset = pasteDragOffset {
+            pastedImageOrigin = NSPoint(x: point.x - offset.x, y: point.y - offset.y)
+            needsDisplay = true
+            return
+        }
+
         switch currentTool {
+        case .select:
+            if !isPastingImage {
+                endPoint = point
+                selectionRect = rectBetween(startPoint, and: endPoint)
+                needsDisplay = true
+            }
+
         case .text:
             if isCreatingText {
-                let current = point
-                textBoxRect = rectBetween(startPoint, and: current)
+                textBoxRect = rectBetween(startPoint, and: point)
                 needsDisplay = true
             }
 
@@ -191,7 +264,33 @@ class CanvasView: NSView {
     override func mouseUp(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
 
+        if isDraggingPastedImage {
+            isDraggingPastedImage = false
+            return
+        }
+
+        if isPastingImage, let pasted = pastedImage, let origin = pastedImageOrigin {
+            initializeCanvasIfNeeded()
+            canvasImage?.lockFocus()
+            pasted.draw(at: origin, from: .zero, operation: .sourceOver, fraction: 1.0)
+            canvasImage?.unlockFocus()
+
+            pastedImage = nil
+            pastedImageOrigin = nil
+            isPastingImage = false
+            needsDisplay = true
+            return
+        }
+
         switch currentTool {
+        case .select:
+            guard let rect = selectionRect else { return }
+            let image = NSImage(size: rect.size)
+            image.lockFocus()
+            canvasImage?.draw(at: .zero, from: rect, operation: .copy, fraction: 1.0)
+            image.unlockFocus()
+            selectedImage = image
+
         case .text:
             if isCreatingText {
                 createTextView(in: textBoxRect)
@@ -215,7 +314,6 @@ class CanvasView: NSView {
                 curvePhase = 2
             case 2:
                 control2 = point
-                // Draw final curve
                 let path = NSBezierPath()
                 path.move(to: curveStart)
                 path.curve(to: curveEnd, controlPoint1: control1, controlPoint2: control2)
@@ -228,6 +326,8 @@ class CanvasView: NSView {
                 curvePhase = 0
                 curveStart = .zero
                 curveEnd = .zero
+                control1 = .zero
+                control2 = .zero
                 isDrawingShape = false
                 needsDisplay = true
             default:
@@ -237,6 +337,89 @@ class CanvasView: NSView {
         default:
             break
         }
+    }
+
+    
+    override func keyDown(with event: NSEvent) {
+        if isPastingActive, let characters = event.charactersIgnoringModifiers {
+            if characters == "\r" || characters == "\n" {
+                // Enter or Return pressed
+                commitPastedImage()
+            }
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+    
+    func cutSelection() {
+        guard let rect = selectionRect else { return }
+
+        // Copy selection to clipboard
+        copySelection()
+
+        // 1. Remove any drawn paths intersecting with the selection
+        drawnPaths.removeAll { (path, _) in
+            rect.intersects(path.bounds)
+        }
+
+        // 2. Erase selection from canvasImage
+        if let image = canvasImage {
+            image.lockFocus()
+            NSColor.white.setFill()
+            rect.fill()
+            image.unlockFocus()
+        }
+
+        // 3. Clear selection and refresh
+        selectionRect = nil
+        needsDisplay = true
+    }
+
+    func copySelection() {
+        guard let image = selectedImage else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([image])
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setData(image.tiffRepresentation, forType: .tiff)
+    }
+
+    func pasteImage() {
+        let pasteboard = NSPasteboard.general
+        if let image = NSImage(pasteboard: pasteboard) {
+            pastedImage = image
+            pastedImageOrigin = NSPoint(x: 50, y: 50)  // Initial offset
+            isPastingImage = true
+            needsDisplay = true
+        } else {
+            print("No image found on clipboard for pasting")
+        }
+    }
+    
+    func commitPastedImage() {
+        guard let image = pastedImage, let origin = pastedImageOrigin else { return }
+
+        initializeCanvasIfNeeded()
+        canvasImage?.lockFocus()
+        image.draw(at: origin, from: .zero, operation: .sourceOver, fraction: 1.0)
+        canvasImage?.unlockFocus()
+
+        // ✅ Clear all paste-related state
+        pastedImage = nil
+        pastedImageOrigin = nil
+        pasteDragOffset = nil
+        pasteImageStartOrigin = nil
+        pasteDragStartPoint = nil
+        isPastingImage = false
+        isPastingActive = false
+        isDraggingPastedImage = false
+
+        // ✅ Also clear selection-related state so user can make a new selection
+        selectionRect = nil
+        selectedImage = nil
+
+        // ✅ Trigger canvas redraw
+        needsDisplay = true
     }
     
     func commitTextView(_ tv: NSTextView) {
@@ -563,4 +746,30 @@ class CanvasView: NSView {
 
         needsDisplay = true
     }
+    
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard event.type == .keyDown else { return false }
+
+        let commandKey = event.modifierFlags.contains(.command)
+        let char = event.charactersIgnoringModifiers?.lowercased()
+
+        if commandKey {
+            switch char {
+            case "x": // ⌘X
+                cutSelection()
+                return true
+            case "c": // ⌘C
+                copySelection()
+                return true
+            case "v": // ⌘V
+                pasteImage()
+                return true
+            default:
+                break
+            }
+        }
+
+        return super.performKeyEquivalent(with: event)
+    }
+
 }
