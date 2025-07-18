@@ -51,6 +51,41 @@ class CanvasView: NSView {
     var pasteDragOffset: NSPoint?
     var pasteImageStartOrigin: NSPoint?
     var isDraggingPastedImage: Bool = false
+    
+    @objc public func handleDeleteKey() {
+        if isPastingActive {
+            print("Deleting pasted image")
+            pastedImage = nil
+            pastedImageOrigin = nil
+            isPastingImage = false
+            isPastingActive = false
+            needsDisplay = true
+        } else if let rect = selectionRect {
+            print("Deleting selection from canvas")
+            canvasImage?.lockFocus()
+            NSColor.white.setFill()
+            rect.fill()
+            canvasImage?.unlockFocus()
+            selectionRect = nil
+            selectedImage = nil
+            needsDisplay = true
+        } else {
+            print("Delete key pressed, but nothing to delete.")
+        }
+    }
+    
+    override var canBecomeKeyView: Bool {
+        return true
+    }
+    
+    override func becomeFirstResponder() -> Bool {
+        print("CanvasView: becomeFirstResponder called")
+        return true
+    }
+    
+    override var acceptsFirstResponder: Bool {
+        return true
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
@@ -142,6 +177,8 @@ class CanvasView: NSView {
         if isPastingImage, let image = pastedImage, let origin = pastedImageOrigin {
             let pasteRect = NSRect(origin: origin, size: image.size)
             if pasteRect.contains(point) {
+                print("Canvas is first responder (again)!")
+                self.window?.makeFirstResponder(self)
                 // Begin drag of paste preview
                 pasteDragStartPoint = point
                 pasteImageStartOrigin = origin
@@ -387,10 +424,20 @@ class CanvasView: NSView {
     func pasteImage() {
         let pasteboard = NSPasteboard.general
         if let image = NSImage(pasteboard: pasteboard) {
+            isPastingActive = true
             pastedImage = image
             pastedImageOrigin = NSPoint(x: 50, y: 50)  // Initial offset
             isPastingImage = true
             needsDisplay = true
+            DispatchQueue.main.async {
+                if self.window?.makeFirstResponder(self) == true {
+                    print("CanvasView is now first responder (after paste)")
+                } else {
+                    print("❌ CanvasView could NOT become first responder (after paste)")
+                }
+            }
+            self.window?.makeFirstResponder(self)
+            print("Canvas is first responder!")
         } else {
             print("No image found on clipboard for pasting")
         }
@@ -580,6 +627,36 @@ class CanvasView: NSView {
             canvasImage?.unlockFocus()
         }
     }
+    
+    func deleteSelectionOrPastedImage() {
+        print("deleteSelectionOrPastedImage")
+        if isPastingActive {
+            print("Pasting is active!")
+            // Clear the uncommitted pasted content
+            pastedImage = nil
+            pastedImageOrigin = nil
+            pasteDragOffset = nil
+            pasteImageStartOrigin = nil
+            pasteDragStartPoint = nil
+            isDraggingPastedImage = false
+            isPastingImage = false
+            isPastingActive = false
+            needsDisplay = true
+            return
+        }
+
+        if let rect = selectionRect {
+            initializeCanvasIfNeeded()
+            canvasImage?.lockFocus()
+            NSColor.white.set()
+            NSBezierPath(rect: rect).fill()
+            canvasImage?.unlockFocus()
+
+            selectionRect = nil
+            selectedImage = nil
+            needsDisplay = true
+        }
+    }
 
     func pickColor(at point: NSPoint) -> NSColor? {
         let flippedPoint = NSPoint(x: point.x, y: bounds.height - point.y)
@@ -767,8 +844,11 @@ class CanvasView: NSView {
             default:
                 break
             }
+        } else if event.keyCode == 51 { // Delete key
+            print("CanvasView: performKeyEquivalent detected DELETE key")
+            handleDeleteKey()
+            return true // We handled it
         }
-
         return super.performKeyEquivalent(with: event)
     }
 
