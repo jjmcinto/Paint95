@@ -23,17 +23,28 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
     }
     
     func handleGlobalKeyDown(_ event: NSEvent) -> NSEvent? {
-        if event.keyCode == 51 { // Delete key
-            print("Global monitor: DELETE key pressed")
-            canvasView.handleDeleteKey() // Call directly on canvas
-            return nil // Stop propagation
+        switch event.keyCode {
+            case 51: // DELETE
+                canvasView.handleDeleteKey()
+                return nil
+            case 123: // ←
+                canvasView.moveSelectionBy(dx: -1, dy: 0)
+                return nil
+            case 124: // →
+                canvasView.moveSelectionBy(dx: 1, dy: 0)
+                return nil
+            case 125: // ↓
+                canvasView.moveSelectionBy(dx: 0, dy: -1)
+                return nil
+            case 126: // ↑
+                canvasView.moveSelectionBy(dx: 0, dy: 1)
+                return nil
+            default:
+                return event
         }
-
-        return event // Let others handle it
     }
     
     override func keyDown(with event: NSEvent) {
-        print("keyDown:", event.keyCode)
         if event.keyCode == 51 { // 51 = Delete key
             canvasView.deleteSelectionOrPastedImage()
         } else {
