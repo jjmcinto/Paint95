@@ -10,23 +10,23 @@
             <objects>
                 <viewController id="bU7-R8-ocO" customClass="ViewController" customModule="Paint95" customModuleProvider="target" sceneMemberID="viewController">
                     <view key="view" id="tOy-S4-hL0">
-                        <rect key="frame" x="0.0" y="0.0" width="450" height="300"/>
+                        <rect key="frame" x="0.0" y="0.0" width="967" height="722"/>
                         <autoresizingMask key="autoresizingMask"/>
                         <subviews>
                             <customView fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="hjZ-ja-Tvy" customClass="CanvasView" customModule="Paint95" customModuleProvider="target">
-                                <rect key="frame" x="100" y="50" width="800" height="668"/>
+                                <rect key="frame" x="100" y="54" width="800" height="668"/>
                                 <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
                             </customView>
                             <customView fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="Ttc-D5-FGE" customClass="ToolbarView" customModule="Paint95">
-                                <rect key="frame" x="0.0" y="50" width="100" height="250"/>
+                                <rect key="frame" x="0.0" y="54" width="100" height="250"/>
                                 <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
                             </customView>
                             <customView fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="Quk-ip-mAh" customClass="ColorPaletteView" customModule="Paint95" customModuleProvider="target">
-                                <rect key="frame" x="100" y="0.0" width="350" height="50"/>
+                                <rect key="frame" x="100" y="4" width="350" height="50"/>
                                 <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
                             </customView>
                             <customView fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="SuH-U2-c1K" customClass="ColorSwatchView" customModule="Paint95" customModuleProvider="target">
-                                <rect key="frame" x="0.0" y="-4" width="101" height="54"/>
+                                <rect key="frame" x="0.0" y="0.0" width="101" height="54"/>
                                 <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
                             </customView>
                         </subviews>
@@ -40,7 +40,7 @@
                 </viewController>
                 <customObject id="9uD-mB-xHs" userLabel="First Responder" customClass="NSResponder" sceneMemberID="firstResponder"/>
             </objects>
-            <point key="canvasLocation" x="133" y="-59"/>
+            <point key="canvasLocation" x="391.5" y="152"/>
         </scene>
     </scenes>
 </document>
