@@ -58,6 +58,33 @@ class CanvasView: NSView {
     var selectionDragStartPoint: NSPoint?
     var selectionImageStartOrigin: NSPoint?
     
+    //canvas re-size
+    enum ResizeHandle: Int {
+        case bottomLeft = 0, bottomCenter, bottomRight
+        case middleLeft, middleRight
+        case topLeft, topCenter, topRight
+    }
+
+    let handleSize: CGFloat = 5
+    var activeResizeHandle: ResizeHandle? = nil
+    var isResizingCanvas = false
+    var dragStartPoint: NSPoint = .zero
+    var initialCanvasRect: NSRect = .zero
+    var canvasRect = NSRect(x: 0, y: 0, width: 600, height: 400)
+    var handlePositions: [NSPoint] {
+        let offset = handleSize / 2
+        return [
+            NSPoint(x: canvasRect.minX - offset, y: canvasRect.minY - offset), // bottom-left
+            NSPoint(x: canvasRect.midX - offset, y: canvasRect.minY - offset), // bottom-center
+            NSPoint(x: canvasRect.maxX, y: canvasRect.minY - offset),          // bottom-right
+            NSPoint(x: canvasRect.minX - offset, y: canvasRect.midY - offset), // middle-left
+            NSPoint(x: canvasRect.maxX, y: canvasRect.midY - offset),          // middle-right
+            NSPoint(x: canvasRect.minX - offset, y: canvasRect.maxY),          // top-left
+            NSPoint(x: canvasRect.midX - offset, y: canvasRect.maxY),          // top-center
+            NSPoint(x: canvasRect.maxX, y: canvasRect.maxY)                    // top-right
+        ]
+    }
+    
     @objc public func handleDeleteKey() {
         if isPastingActive {
             pastedImage = nil
@@ -103,20 +130,28 @@ class CanvasView: NSView {
         NSColor.white.setFill()
         dirtyRect.fill()
 
-        canvasImage?.draw(in: bounds)
-
-        for (path, color) in drawnPaths {
-            color.setStroke()
-            path.stroke()
-        }
+        let imageSize = canvasImage?.size ?? .zero
+        let imageRect = NSRect(origin: canvasRect.origin, size: imageSize)
+        canvasImage?.draw(in: imageRect)
         
         if let image = selectedImage, let io = selectedImageOrigin {
-            image.draw(at: io, from: .zero, operation: .sourceOver, fraction: 1.0)
-            
-            // Draw a border around the selection
+            let selectionFrame = NSRect(origin: io, size: image.size)
+            let visiblePortion = selectionFrame.intersection(canvasRect)
+
+            if !visiblePortion.isEmpty {
+                NSGraphicsContext.saveGraphicsState()
+                let clipPath = NSBezierPath(rect: canvasRect)
+                clipPath.addClip()
+
+                image.draw(at: io, from: .zero, operation: .sourceOver, fraction: 1.0)
+
+                NSGraphicsContext.restoreGraphicsState()
+            }
+
+            // Draw a border around the (possibly clipped) selection
+            let displayRect = selectionFrame.intersection(canvasRect)
             NSColor.keyboardFocusIndicatorColor.setStroke()
-            let borderRect = NSRect(origin: io, size: image.size)
-            let borderPath = NSBezierPath(rect: borderRect)
+            let borderPath = NSBezierPath(rect: displayRect)
             borderPath.lineWidth = 1
             borderPath.stroke()
         }
@@ -190,6 +225,17 @@ class CanvasView: NSView {
             selectionPath.lineWidth = 1
             selectionPath.stroke()
         }
+        
+        // Draw canvas boundary
+        NSColor.black.setStroke()
+        NSBezierPath(rect: canvasRect).stroke()
+
+        // Draw resize handles
+        NSColor.systemBlue.setFill()
+        for position in handlePositions {
+            let rect = NSRect(x: position.x, y: position.y, width: handleSize, height: handleSize)
+            NSBezierPath(rect: rect).fill()
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -201,6 +247,18 @@ class CanvasView: NSView {
 
         let point = convert(event.locationInWindow, from: nil)
 
+        // Check for handle hit
+        for (i, pos) in handlePositions.enumerated() {
+            let handleRect = NSRect(x: pos.x, y: pos.y, width: handleSize, height: handleSize)
+            if handleRect.contains(point) {
+                activeResizeHandle = ResizeHandle(rawValue: i)
+                isResizingCanvas = true
+                dragStartPoint = point
+                initialCanvasRect = canvasRect
+                return
+            }
+        }
+        
         // Check if we’re in the middle of a paste preview and clicked on the image
         if isPastingImage, let image = pastedImage, let origin = pastedImageOrigin {
             let pasteRect = NSRect(origin: origin, size: image.size)
@@ -287,72 +345,124 @@ class CanvasView: NSView {
     override func mouseDragged(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
 
+        // 🎯 Handle canvas resize if a handle is active
+        if isResizingCanvas, let handle = activeResizeHandle {
+            let dx = point.x - dragStartPoint.x
+            let dy = point.y - dragStartPoint.y
+            var newRect = initialCanvasRect
+
+            switch handle {
+            case .bottomLeft:
+                newRect.origin.x += dx
+                newRect.origin.y += dy
+                newRect.size.width -= dx
+                newRect.size.height -= dy
+            case .bottomCenter:
+                newRect.origin.y += dy
+                newRect.size.height -= dy
+            case .bottomRight:
+                newRect.origin.y += dy
+                newRect.size.height -= dy
+                newRect.size.width += dx
+            case .middleLeft:
+                newRect.origin.x += dx
+                newRect.size.width -= dx
+            case .middleRight:
+                newRect.size.width += dx
+            case .topLeft:
+                newRect.origin.x += dx
+                newRect.size.width -= dx
+                newRect.size.height += dy
+            case .topCenter:
+                newRect.size.height += dy
+            case .topRight:
+                newRect.size.width += dx
+                newRect.size.height += dy
+            }
+
+            // Enforce a minimum size
+            if newRect.width < 50 { newRect.size.width = 50 }
+            if newRect.height < 50 { newRect.size.height = 50 }
+
+            canvasRect = newRect
+            window?.invalidateCursorRects(for: self)
+            needsDisplay = true
+            return
+        }
+
+        // 🎯 Handle dragging pasted image
         if isDraggingPastedImage, let offset = pasteDragOffset {
             pastedImageOrigin = NSPoint(x: point.x - offset.x, y: point.y - offset.y)
             needsDisplay = true
-        } else if isDraggingSelection,
-            let startPoint = selectionDragStartPoint,
-            let imageOrigin = selectionImageStartOrigin {
+            return
+        }
+
+        // 🎯 Handle dragging selection
+        if isDraggingSelection,
+           let startPoint = selectionDragStartPoint,
+           let imageOrigin = selectionImageStartOrigin {
             let dx = point.x - startPoint.x
             let dy = point.y - startPoint.y
             selectedImageOrigin = NSPoint(x: imageOrigin.x + dx, y: imageOrigin.y + dy)
             needsDisplay = true
-        } else {
-            
-            switch currentTool {
-            case .select:
-                if !isPastingImage {
-                    endPoint = point
-                    selectionRect = rectBetween(startPoint, and: endPoint)
-                    needsDisplay = true
-                }
-                
-            case .text:
-                if isCreatingText {
-                    textBoxRect = rectBetween(startPoint, and: point)
-                    needsDisplay = true
-                }
-                
-            case .pencil, .brush:
-                currentPath?.line(to: point)
-                drawCurrentPathToCanvas()
-                currentPath = NSBezierPath()
-                currentPath?.move(to: point)
-                
-            case .eraser:
-                currentPath?.line(to: point)
-                drawCurrentPathToCanvas()
-                eraseDot(at: point)
-                currentPath = NSBezierPath()
-                currentPath?.move(to: point)
-                
-            case .line, .rect, .roundRect, .ellipse:
+            return
+        }
+
+        // 🎯 Handle tool-based actions
+        switch currentTool {
+        case .select:
+            if !isPastingImage {
                 endPoint = point
+                selectionRect = rectBetween(startPoint, and: endPoint)
                 needsDisplay = true
-                
-            case .curve:
-                switch curvePhase {
-                case 0:
-                    curveEnd = point
-                case 1:
-                    control1 = point
-                case 2:
-                    control2 = point
-                default:
-                    break
-                }
-                needsDisplay = true
-                
-            default:
-                break
             }
+
+        case .text:
+            if isCreatingText {
+                textBoxRect = rectBetween(startPoint, and: point)
+                needsDisplay = true
+            }
+
+        case .pencil, .brush:
+            currentPath?.line(to: point)
+            drawCurrentPathToCanvas()
+            currentPath = NSBezierPath()
+            currentPath?.move(to: point)
+
+        case .eraser:
+            currentPath?.line(to: point)
+            drawCurrentPathToCanvas()
+            eraseDot(at: point)
+            currentPath = NSBezierPath()
+            currentPath?.move(to: point)
+
+        case .line, .rect, .roundRect, .ellipse:
+            endPoint = point
+            needsDisplay = true
+
+        case .curve:
+            switch curvePhase {
+            case 0: curveEnd = point
+            case 1: control1 = point
+            case 2: control2 = point
+            default: break
+            }
+            needsDisplay = true
+
+        default:
+            break
         }
     }
-
+    
     override func mouseUp(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
+        if isResizingCanvas {
+            isResizingCanvas = false
+            activeResizeHandle = nil
 
-        if isDraggingPastedImage {
+            cropCanvasImageToCanvasRect()
+
+            needsDisplay = true
+        } else if isDraggingPastedImage {
             isDraggingPastedImage = false
         } else if isDraggingSelection {
             isDraggingSelection = false
@@ -376,6 +486,10 @@ class CanvasView: NSView {
                     commitSelection()
                     return
                 }
+            } else if isResizingCanvas {
+                isResizingCanvas = false
+                activeResizeHandle = nil
+                needsDisplay = true
             } else {
                 switch currentTool {
                 case .select:
@@ -413,15 +527,28 @@ class CanvasView: NSView {
                         curvePhase = 2
                     case 2:
                         control2 = point
+                        
                         let path = NSBezierPath()
                         path.move(to: curveStart)
                         path.curve(to: curveEnd, controlPoint1: control1, controlPoint2: control2)
+                        path.lineWidth = 2
+                        
+                        let translatedPath = path.copy() as! NSBezierPath
+                        let transform = AffineTransform(translationByX: -canvasRect.origin.x, byY: -canvasRect.origin.y)
+                        translatedPath.transform(using: transform)
+                        
+                        print("CanvasImage size: \(canvasImage?.size ?? .zero)")
+                        print("CanvasRect size: \(canvasRect.size)")
+                        
                         canvasImage?.lockFocus()
                         currentColor.set()
-                        path.lineWidth = 2
-                        path.stroke()
+                        translatedPath.stroke()
                         canvasImage?.unlockFocus()
-                        drawnPaths.append((path, currentColor))
+                        
+                        drawnPaths.append((path: translatedPath.copy() as! NSBezierPath, color: currentColor))
+                        
+                        
+                        
                         curvePhase = 0
                         curveStart = .zero
                         curveEnd = .zero
@@ -542,19 +669,39 @@ class CanvasView: NSView {
     }
 
     func commitSelection() {
-        guard let image = selectedImage else { return }
+        guard let image = selectedImage, let origin = selectedImageOrigin else { return }
+
+        let imageRect = NSRect(origin: origin, size: image.size)
+        let intersection = imageRect.intersection(canvasRect)
+
+        guard !intersection.isEmpty else {
+            // Entire selection is outside the canvas — discard it
+            selectedImage = nil
+            selectedImageOrigin = nil
+            selectionRect = nil
+            needsDisplay = true
+            return
+        }
+
+        // Calculate the portion of the image that intersects canvasRect
+        let drawOriginInImage = NSPoint(x: intersection.origin.x - origin.x,
+                                        y: intersection.origin.y - origin.y)
+        let drawRectInImage = NSRect(origin: drawOriginInImage, size: intersection.size)
 
         initializeCanvasIfNeeded()
-
         canvasImage?.lockFocus()
-        if let io = selectedImageOrigin {
-            image.draw(at: io, from: .zero, operation: .sourceOver, fraction: 1.0)
-        }
+
+        image.draw(at: intersection.origin,
+                   from: drawRectInImage,
+                   operation: .sourceOver,
+                   fraction: 1.0)
+
         canvasImage?.unlockFocus()
 
+        // Clear selection state
         selectedImage = nil
+        selectedImageOrigin = nil
         selectionRect = nil
-        hasMovedSelection = false
         needsDisplay = true
     }
 
@@ -605,6 +752,37 @@ class CanvasView: NSView {
         needsDisplay = true
     }
     
+    private func cropCanvasImageToCanvasRect() {
+        guard let image = canvasImage else { return }
+
+        // Create a new image the same size as the new canvasRect
+        let newSize = canvasRect.size
+        let newImage = NSImage(size: newSize)
+
+        // Source origin is relative to the original image (always top-left origin)
+        let sourceRect = NSRect(origin: canvasRect.origin, size: newSize)
+
+        // Destination rect always starts at (0, 0)
+        let destRect = NSRect(origin: .zero, size: newSize)
+
+        newImage.lockFocus()
+
+        image.draw(
+            in: destRect,
+            from: sourceRect,
+            operation: .copy,
+            fraction: 1.0,
+            respectFlipped: true,
+            hints: [.interpolation: NSImageInterpolation.none]
+        )
+
+        newImage.unlockFocus()
+
+        // Update the canvas image and reset origin to zero
+        canvasImage = newImage
+        canvasRect.origin = .zero
+    }
+    
     func createTextView(in rect: NSRect) {
         textView?.removeFromSuperview()
         
@@ -627,14 +805,20 @@ class CanvasView: NSView {
     
     private func drawShape(to image: NSImage?) {
         guard let image = image else { return }
-        guard let path = shapePathBetween(startPoint, endPoint) else { return }
+
+        let path = shapePathBetween(startPoint, endPoint)
+        path?.lineWidth = 2
+
+        let transformedPath = path?.copy() as! NSBezierPath
+        let transform = AffineTransform(translationByX: -canvasRect.origin.x, byY: -canvasRect.origin.y)
+        transformedPath.transform(using: transform)
 
         image.lockFocus()
-        currentColor.set()
-        path.lineWidth = 2
-        path.stroke()
-        drawnPaths.append((path.copy() as! NSBezierPath, currentColor))
+        currentColor.setStroke()
+        transformedPath.stroke()
         image.unlockFocus()
+
+        drawnPaths.append((path: transformedPath.copy() as! NSBezierPath, color: currentColor))
     }
     
     func rectBetween(_ p1: NSPoint, and p2: NSPoint) -> NSRect {
@@ -684,12 +868,15 @@ class CanvasView: NSView {
     private func drawCurrentPathToCanvas() {
         guard let path = currentPath else { return }
         initializeCanvasIfNeeded()
-
-        // Configure path appearance before drawing
-        path.lineCapStyle = .butt      // No rounded ends
-        path.lineJoinStyle = .miter    // Sharp corners
         
-        let finalPath = path.copy() as! NSBezierPath
+        // Prepare a translated copy of the path
+        let translatedPath = path.copy() as! NSBezierPath
+        let transform = AffineTransform(translationByX: -canvasRect.origin.x, byY: -canvasRect.origin.y)
+        translatedPath.transform(using: transform)
+
+        translatedPath.lineCapStyle = .butt
+        translatedPath.lineJoinStyle = .miter
+        
         var strokeColor: NSColor
         var lineWidth: CGFloat
 
@@ -703,19 +890,55 @@ class CanvasView: NSView {
             lineWidth = 5
 
         case .eraser:
-            path.lineCapStyle = .butt
-            path.lineJoinStyle = .miter
             strokeColor = .white
             lineWidth = 15
 
         default:
-            return  // don't accidentally fall through
+            return
         }
 
-        finalPath.lineWidth = lineWidth
-        drawnPaths.append((path: finalPath, color: strokeColor))
+        translatedPath.lineWidth = lineWidth
+
+        // Draw to the canvas image
+        canvasImage?.lockFocus()
+        strokeColor.set()
+        translatedPath.stroke()
+        canvasImage?.unlockFocus()
+
+        drawnPaths.append((path: translatedPath.copy() as! NSBezierPath, color: strokeColor))
+
         currentPath = nil
         needsDisplay = true
+    }
+    
+    override func resetCursorRects() {
+        super.resetCursorRects()
+
+        for (i, position) in handlePositions.enumerated() {
+            let handleRect = NSRect(x: position.x, y: position.y, width: handleSize, height: handleSize)
+            let cursor = cursorForHandle(index: i)
+            addCursorRect(handleRect, cursor: cursor)
+        }
+    }
+    
+    private func cursorForHandle(index: Int) -> NSCursor {
+        switch index {
+        case 1, 6:
+            return .resizeUpDown
+        case 3, 4:
+            return .resizeLeftRight
+        case 5, 2:
+            return NSCursor(image: NSImage(byReferencingFile: "/System/Library/Frameworks/WebKit.framework/Versions/Current/Frameworks/WebCore.framework/Resources/northWestSouthEastResizeCursor.png")!, hotSpot: NSPoint(x: 8, y: 8))
+        case 7, 0:
+            return NSCursor(image: NSImage(byReferencingFile: "/System/Library/Frameworks/WebKit.framework/Versions/Current/Frameworks/WebCore.framework/Resources/northEastSouthWestResizeCursor.png")!, hotSpot: NSPoint(x: 8, y: 8))
+        default:
+            return .arrow // fallback for corners
+        }
+    }
+    
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        resetCursorRects()
     }
     
     private func eraseDot(at point: NSPoint, radius: CGFloat = 7.5) {
@@ -735,7 +958,7 @@ class CanvasView: NSView {
 
     private func initializeCanvasIfNeeded() {
         if canvasImage == nil {
-            canvasImage = NSImage(size: bounds.size)
+            canvasImage = NSImage(size: canvasRect.size)
             canvasImage?.lockFocus()
             NSColor.white.set()
             NSBezierPath(rect: bounds).fill()
@@ -813,7 +1036,7 @@ class CanvasView: NSView {
         NSColor.white.setFill()
         bounds.fill()
 
-        canvasImage?.draw(in: bounds)
+        canvasImage?.draw(in: canvasRect)
 
         for (path, color) in drawnPaths {
             color.setStroke()
@@ -832,9 +1055,9 @@ class CanvasView: NSView {
     }
 
     func floodFill(from point: NSPoint, with fillColor: NSColor) {
-        let width = Int(bounds.width)
-        let height = Int(bounds.height)
-
+        let width = Int(canvasRect.width)
+        let height = Int(canvasRect.height)
+        
         guard let rep = NSBitmapImageRep(
             bitmapDataPlanes: nil,
             pixelsWide: width,
@@ -853,8 +1076,8 @@ class CanvasView: NSView {
         NSGraphicsContext.current = context
 
         NSColor.white.setFill()
-        bounds.fill()
-        canvasImage?.draw(in: bounds)
+        canvasRect.fill()
+        canvasImage?.draw(in: canvasRect)
         for (path, color) in drawnPaths {
             color.setStroke()
             path.stroke()
@@ -866,7 +1089,7 @@ class CanvasView: NSView {
         guard let data = rep.bitmapData else { return }
 
         let x = Int(point.x)
-        let y = Int(bounds.height - point.y)
+        let y = Int(canvasRect.height - point.y)
         guard x >= 0, x < width, y >= 0, y < height else { return }
 
         let offset = (y * rep.bytesPerRow) + (x * rep.samplesPerPixel)
@@ -921,15 +1144,15 @@ class CanvasView: NSView {
         }
 
         if canvasImage == nil {
-            canvasImage = NSImage(size: bounds.size)
+            canvasImage = NSImage(size: canvasRect.size)
             canvasImage?.lockFocus()
             NSColor.white.setFill()
-            bounds.fill()
+            canvasRect.fill()
             canvasImage?.unlockFocus()
         }
 
         canvasImage?.lockFocus()
-        rep.draw(in: bounds)
+        rep.draw(in: canvasRect)
         canvasImage?.unlockFocus()
 
         needsDisplay = true
