@@ -211,6 +211,13 @@ class CanvasView: NSView {
             let shapePath = shapePathBetween(startPoint, endPoint)
             shapePath?.lineWidth = 2
             shapePath?.stroke()
+        } else if isCreatingText {
+            NSColor.gray.setStroke()
+            let path = NSBezierPath(rect: textBoxRect)
+            let dashPattern: [CGFloat] = [4, 2]
+            path.setLineDash(dashPattern, count: dashPattern.count, phase: 0)
+            path.lineWidth = 1
+            path.stroke()
         }
         
         if isPastingImage, let image = pastedImage, let origin = pastedImageOrigin {
@@ -240,105 +247,112 @@ class CanvasView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         // End text editing if applicable
-        if let tv = textView, tv.window?.firstResponder == tv {
-            window?.makeFirstResponder(nil)
-            return
-        }
-
-        let point = convert(event.locationInWindow, from: nil)
-
-        // Check for handle hit
-        for (i, pos) in handlePositions.enumerated() {
-            let handleRect = NSRect(x: pos.x, y: pos.y, width: handleSize, height: handleSize)
-            if handleRect.contains(point) {
-                activeResizeHandle = ResizeHandle(rawValue: i)
-                isResizingCanvas = true
-                dragStartPoint = point
-                initialCanvasRect = canvasRect
-                return
-            }
-        }
-        
-        // Check if we’re in the middle of a paste preview and clicked on the image
-        if isPastingImage, let image = pastedImage, let origin = pastedImageOrigin {
-            let pasteRect = NSRect(origin: origin, size: image.size)
-            if pasteRect.contains(point) {
-                self.window?.makeFirstResponder(self)
-                // Begin drag of paste preview
-                pasteDragStartPoint = point
-                pasteImageStartOrigin = origin
-                pasteDragOffset = NSPoint(x: point.x - origin.x, y: point.y - origin.y)
-                isDraggingPastedImage = true
+        if let tv = textView {
+            if tv.window?.firstResponder == tv {
+                // Commit the text and return
+                commitTextView(tv)
                 return
             } else {
-                // Commit paste if click is outside
-                commitPastedImage()
-                return
+                // If a textView exists but isn’t focused, remove it before starting a new one
+                tv.removeFromSuperview()
+                textView = nil
             }
-        }
-        
-        // Check if clicking outside an active selection
-        if let image = selectedImage, let io = selectedImageOrigin {
-            let selectionFrame = NSRect(origin: io, size: image.size)
-            if !selectionFrame.contains(point) {
-                commitSelection()
-                return
-            }
-        }
-        
-        initializeCanvasIfNeeded()
-
-        switch currentTool {
-        case .select:
-            if let image = selectedImage, let io = selectedImageOrigin {
-                let rect = NSRect(origin: io, size: image.size)
-                if rect.contains(point) {
-                    isDraggingSelection = true
-                    selectionDragStartPoint = point
-                    selectionImageStartOrigin = selectedImageOrigin
-                    clearCanvasRegion(rect: rect)
+        } else {
+            let point = convert(event.locationInWindow, from: nil)
+            
+            // Check for handle hit
+            for (i, pos) in handlePositions.enumerated() {
+                let handleRect = NSRect(x: pos.x, y: pos.y, width: handleSize, height: handleSize)
+                if handleRect.contains(point) {
+                    activeResizeHandle = ResizeHandle(rawValue: i)
+                    isResizingCanvas = true
+                    dragStartPoint = point
+                    initialCanvasRect = canvasRect
+                    return
                 }
-            } else if !isPastingImage {
+            }
+            
+            // Check if we’re in the middle of a paste preview and clicked on the image
+            if isPastingImage, let image = pastedImage, let origin = pastedImageOrigin {
+                let pasteRect = NSRect(origin: origin, size: image.size)
+                if pasteRect.contains(point) {
+                    self.window?.makeFirstResponder(self)
+                    // Begin drag of paste preview
+                    pasteDragStartPoint = point
+                    pasteImageStartOrigin = origin
+                    pasteDragOffset = NSPoint(x: point.x - origin.x, y: point.y - origin.y)
+                    isDraggingPastedImage = true
+                    return
+                } else {
+                    // Commit paste if click is outside
+                    commitPastedImage()
+                    return
+                }
+            }
+            
+            // Check if clicking outside an active selection
+            if let image = selectedImage, let io = selectedImageOrigin {
+                let selectionFrame = NSRect(origin: io, size: image.size)
+                if !selectionFrame.contains(point) {
+                    commitSelection()
+                    return
+                }
+            }
+            
+            initializeCanvasIfNeeded()
+            
+            switch currentTool {
+            case .select:
+                if let image = selectedImage, let io = selectedImageOrigin {
+                    let rect = NSRect(origin: io, size: image.size)
+                    if rect.contains(point) {
+                        isDraggingSelection = true
+                        selectionDragStartPoint = point
+                        selectionImageStartOrigin = selectedImageOrigin
+                        clearCanvasRegion(rect: rect)
+                    }
+                } else if !isPastingImage {
+                    startPoint = point
+                    selectionRect = nil
+                    selectedImage = nil
+                    self.window?.makeFirstResponder(self)
+                }
+                
+            case .text:
                 startPoint = point
-                selectionRect = nil
-                selectedImage = nil
-                self.window?.makeFirstResponder(self)
-            }
-
-        case .text:
-            startPoint = point
-            isCreatingText = true
-
-        case .eyeDropper:
-            if let picked = pickColor(at: point) {
-                currentColor = picked
-                NotificationCenter.default.post(name: .colorPicked, object: picked)
-            }
-
-        case .pencil, .brush, .eraser:
-            startPoint = point
-            currentPath = NSBezierPath()
-            currentPath?.move(to: point)
-
-        case .fill:
-            floodFill(from: point, with: currentColor)
-
-        case .curve:
-            switch curvePhase {
-            case 0:
-                curveStart = point
-                curveEnd = point
+                isCreatingText = true
+                
+            case .eyeDropper:
+                if let picked = pickColor(at: point) {
+                    currentColor = picked
+                    NotificationCenter.default.post(name: .colorPicked, object: picked)
+                }
+                
+            case .pencil, .brush, .eraser:
+                startPoint = point
+                currentPath = NSBezierPath()
+                currentPath?.move(to: point)
+                
+            case .fill:
+                floodFill(from: point, with: currentColor)
+                
+            case .curve:
+                switch curvePhase {
+                case 0:
+                    curveStart = point
+                    curveEnd = point
+                default:
+                    break
+                }
+                
+            case .line, .rect, .roundRect, .ellipse:
+                startPoint = point
+                endPoint = point
+                isDrawingShape = true
+                
             default:
                 break
             }
-
-        case .line, .rect, .roundRect, .ellipse:
-            startPoint = point
-            endPoint = point
-            isDrawingShape = true
-
-        default:
-            break
         }
     }
 
@@ -505,8 +519,9 @@ class CanvasView: NSView {
                     needsDisplay = true
                     
                 case .text:
-                    if isCreatingText {
+                    if isCreatingText && textBoxRect != .zero {
                         createTextView(in: textBoxRect)
+                        textBoxRect = .zero
                         isCreatingText = false
                     }
                     
