@@ -100,11 +100,11 @@ class CanvasView: NSView {
         }
     }
     
-    func clearCanvasRegion(rect: NSRect) {
-        canvasImage?.lockFocus()
+    func clearCanvasRegion(rect: NSRect, lockFocus: Bool = true) {
+        if lockFocus { canvasImage?.lockFocus() }
         NSColor.white.setFill()
         rect.fill()
-        canvasImage?.unlockFocus()
+        if lockFocus { canvasImage?.unlockFocus() }
         
         // Remove intersecting paths
         drawnPaths.removeAll { (path, _) in
@@ -127,8 +127,9 @@ class CanvasView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
-        NSColor.white.setFill()
-        dirtyRect.fill()
+        clearCanvasRegion(rect: dirtyRect, lockFocus: false)
+        //NSColor.white.setFill()
+        //dirtyRect.fill()
 
         let imageSize = canvasImage?.size ?? .zero
         let imageRect = NSRect(origin: canvasRect.origin, size: imageSize)
