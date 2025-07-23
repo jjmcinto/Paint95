@@ -12,7 +12,7 @@ extension CanvasView: NSTextViewDelegate {
 }
 
 class CanvasView: NSView {
-
+    
     weak var delegate: CanvasViewDelegate?
 
     var currentTool: PaintTool = .pencil
@@ -25,6 +25,7 @@ class CanvasView: NSView {
     var isDrawingShape: Bool = false
 
     var drawnPaths: [(path: NSBezierPath, color: NSColor)] = []
+    var colorFromSelectionWindow: Bool = false
 
     // For curve tool phases
     var curvePhase = 0
@@ -85,6 +86,36 @@ class CanvasView: NSView {
         ]
     }
     
+    func colorSelectedFromPalette(_ color: NSColor) {
+        SharedColor.currentColor = color
+        SharedColor.source = .palette
+
+        // Approximate RGB from NSColor
+        if let rgbColor = color.usingColorSpace(.deviceRGB) {
+            SharedColor.rgb = [
+                Double(rgbColor.redComponent * 255.0),
+                Double(rgbColor.greenComponent * 255.0),
+                Double(rgbColor.blueComponent * 255.0)
+            ]
+        }
+
+        self.currentColor = color
+        needsDisplay = true
+    }
+    
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.addObserver(self, selector: #selector(colorPicked(_:)), name: .colorPicked, object: nil)
+    }
+
+    @objc func colorPicked(_ notification: Notification) {
+        if let newColor = notification.object as? NSColor {
+            currentColor = newColor
+            colorFromSelectionWindow = true // Track source
+            needsDisplay = true
+        }
+    }
+    
     @objc public func handleDeleteKey() {
         if isPastingActive {
             pastedImage = nil
@@ -98,6 +129,37 @@ class CanvasView: NSView {
             selectedImage = nil
             needsDisplay = true
         }
+    }
+    
+    func showColorSelectionWindow() {
+        print("showColorSelectionWindow")
+        var rgbColor: [Double] = [0,0,0]
+        
+        if colorFromSelectionWindow {
+            rgbColor = AppColorState.shared.rgb
+            print("Stored RGB")
+        } else {
+            // Approximate RGB from NSColor
+            if let rgbColor = currentColor.usingColorSpace(.deviceRGB) {
+                SharedColor.rgb = [
+                    Double(rgbColor.redComponent * 255.0),
+                    Double(rgbColor.greenComponent * 255.0),
+                    Double(rgbColor.blueComponent * 255.0)
+                ]
+                print("RGB from canvas")
+            }
+        }
+        
+        let controller = ColorSelectionWindowController(initialRGB: rgbColor, onColorSelected: { [weak self] newColor in
+            self?.currentColor = newColor
+            NotificationCenter.default.post(name: .colorPicked, object: newColor)
+        })
+        controller.showWindow(nil)
+    }
+    
+    func setCurrentColor(_ color: NSColor) {
+        currentColor = color
+        needsDisplay = true
     }
     
     func clearCanvasRegion(rect: NSRect, lockFocus: Bool = true) {
@@ -327,6 +389,7 @@ class CanvasView: NSView {
                 if let picked = pickColor(at: point) {
                     currentColor = picked
                     NotificationCenter.default.post(name: .colorPicked, object: picked)
+                    colorFromSelectionWindow = false // Track source
                 }
                 
             case .pencil, .brush, .eraser:

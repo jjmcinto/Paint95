@@ -8,6 +8,8 @@ class ColorSwatchView: NSView {
         }
     }
 
+    var onClick: (() -> Void)?
+    
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
@@ -18,5 +20,9 @@ class ColorSwatchView: NSView {
         NSColor.black.setStroke()
         path.lineWidth = 2
         path.stroke()
+    }
+    
+    override func mouseDown(with event: NSEvent) {
+        onClick?()
     }
 }

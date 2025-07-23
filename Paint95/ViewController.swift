@@ -16,10 +16,45 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
         colorPaletteView.delegate = self
         canvasView.delegate = self
         
+        colorSwatchView.color = canvasView.currentColor
+        //self?.presentColorSelection(currentColor: self!.colorSwatchView.color)
+        colorSwatchView.onClick = { [weak self] in
+            self?.presentColorSelection()
+        }
+        
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
            guard let self = self else { return event }
            return self.handleGlobalKeyDown(event)
        }
+    }
+    
+    var colorPickerWindow: ColorSelectionWindowController?
+
+    func presentColorSelection() {
+        print("presentColorSelection")
+        let initialRGB: [Double]
+        
+        if canvasView.colorFromSelectionWindow {
+            initialRGB = AppColorState.shared.rgb
+            print("Stored RGB")
+        } else {
+            guard let rgbColor = canvasView.currentColor.usingColorSpace(.deviceRGB) else {
+                print("Failed to convert color to deviceRGB")
+                return
+            }
+            initialRGB = [
+                Double(rgbColor.redComponent * 255.0),
+                Double(rgbColor.greenComponent * 255.0),
+                Double(rgbColor.blueComponent * 255.0)
+            ]
+            print("RGB from canvas")
+        }
+
+        let colorWindow = ColorSelectionWindowController(initialRGB: initialRGB) { newColor in
+            NotificationCenter.default.post(name: .colorPicked, object: newColor)
+        }
+
+        colorWindow.showWindow(nil)
     }
     
     func handleGlobalKeyDown(_ event: NSEvent) -> NSEvent? {
@@ -66,7 +101,17 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
     // MARK: - ColorPaletteDelegate
     func colorSelected(_ color: NSColor) {
         canvasView.currentColor = color
-        colorSwatchView.color = color
+        canvasView.colorFromSelectionWindow = false
+        guard let rgbColor = color.usingColorSpace(.deviceRGB) else {
+            print("Failed to convert color to deviceRGB")
+            return
+        }
+        AppColorState.shared.rgb = [
+            Double(rgbColor.redComponent * 255.0),
+            Double(rgbColor.greenComponent * 255.0),
+            Double(rgbColor.blueComponent * 255.0)
+        ]
+        colorSwatchView.color = rgbColor
     }
     
     // Optional: Clear button or menu action
