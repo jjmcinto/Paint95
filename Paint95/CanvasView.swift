@@ -727,6 +727,14 @@ class CanvasView: NSView {
     func pasteImage() {
         let pasteboard = NSPasteboard.general
 
+        // Step 1: If an image is already being pasted, commit it
+        if isPastingImage {
+            commitPastedImage()
+            isPastingImage = false
+            pastedImage = nil
+            pastedImageOrigin = nil
+        }
+        
         if let images = pasteboard.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage],
            let image = images.first {
 
@@ -748,8 +756,9 @@ class CanvasView: NSView {
     }
 
     func commitSelection() {
+        print("commitSelection!")
         guard let image = selectedImage, let origin = selectedImageOrigin else { return }
-
+        
         let imageRect = NSRect(origin: origin, size: image.size)
         let intersection = imageRect.intersection(canvasRect)
 
@@ -785,6 +794,7 @@ class CanvasView: NSView {
     }
 
     func commitPastedImage() {
+        print("commitPastedImage!")
         guard let image = pastedImage, let origin = pastedImageOrigin else { return }
 
         initializeCanvasIfNeeded()

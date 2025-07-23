@@ -31,12 +31,10 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
     var colorPickerWindow: ColorSelectionWindowController?
 
     func presentColorSelection() {
-        print("presentColorSelection")
         let initialRGB: [Double]
         
         if canvasView.colorFromSelectionWindow {
             initialRGB = AppColorState.shared.rgb
-            print("Stored RGB")
         } else {
             guard let rgbColor = canvasView.currentColor.usingColorSpace(.deviceRGB) else {
                 print("Failed to convert color to deviceRGB")
@@ -47,7 +45,6 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
                 Double(rgbColor.greenComponent * 255.0),
                 Double(rgbColor.blueComponent * 255.0)
             ]
-            print("RGB from canvas")
         }
 
         let colorWindow = ColorSelectionWindowController(initialRGB: initialRGB) { newColor in
