@@ -419,16 +419,6 @@ class CanvasView: NSView {
             }
         } else {
             let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
-            if isZoomed {
-                print("DEBUG: Zoom mode MouseDown at canvas coords: (\(point.x), \(point.y))")
-            } else {
-                print("DEBUG: Normal mode MouseDown at canvas coords: (\(point.x), \(point.y))")
-            }
-            //var point = convert(event.locationInWindow, from: nil)
-            //if ![.line, .rect, .roundRect, .ellipse].contains(currentTool) {
-            //    //skip zoom-related adjustment on shape preview
-            //    point = convertZoomedPointToCanvas(point)
-            //}
             
             // Check for handle hit
             for (i, pos) in handlePositions.enumerated() {
@@ -534,9 +524,6 @@ class CanvasView: NSView {
                     zoomRect = NSRect(x: point.x - zoomSize/2, y: point.y - zoomSize/2,
                                       width: zoomSize, height: zoomSize)
                     isZoomed = true
-                    print("DEBUG: Entering Zoom mode")
-                    print("DEBUG: Top-left: (\(zoomRect.origin.x), \(zoomRect.origin.y + zoomRect.size.height))")
-                    print("DEBUG: Bottom-right: (\(zoomRect.origin.x + zoomRect.size.width), \(zoomRect.origin.y))")
                     needsDisplay = true
                 }
                 
@@ -684,11 +671,6 @@ class CanvasView: NSView {
             needsDisplay = true
         } else {
             let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
-            if isZoomed {
-                print("DEBUG: Zoom mode MouseUp at canvas coords: (\(point.x), \(point.y))")
-            } else {
-                print("DEBUG: Normal mode MouseUp at canvas coords: (\(point.x), \(point.y))")
-            }
             if let image = selectedImage, let io = selectedImageOrigin {
                 let rect = NSRect(origin: io, size: image.size)
                 if !rect.contains(point) {
@@ -700,6 +682,7 @@ class CanvasView: NSView {
                 activeResizeHandle = nil
                 needsDisplay = true
             } else {
+                endPoint = point
                 switch currentTool {
                 case .select:
                     // Copy the selection
@@ -720,11 +703,59 @@ class CanvasView: NSView {
                         isCreatingText = false
                     }
                     
-                case .pencil, .brush, .eraser:
+                case .pencil:
+                    if pointsAreEqual(startPoint, endPoint) {
+                        print("pencil dot!")
+                        // Mark one pixel
+                        initializeCanvasIfNeeded()
+                        canvasImage?.lockFocus()
+                        currentColor.set()
+                        let dotRect = NSRect(x: startPoint.x, y: startPoint.y, width: 1, height: 1)
+                        dotRect.fill()
+                        canvasImage?.unlockFocus()
+                        needsDisplay = true
+                    }
+                    currentPath = nil
+
+                case .brush:
+                    if pointsAreEqual(startPoint, endPoint) {
+                        print("brush dot!")
+                        // Draw a brush-sized dot (5px)
+                        initializeCanvasIfNeeded()
+                        canvasImage?.lockFocus()
+                        currentColor.set()
+                        let brushSize: CGFloat = 5
+                        let dotRect = NSRect(x: startPoint.x - brushSize/2,
+                                             y: startPoint.y - brushSize/2,
+                                             width: brushSize, height: brushSize)
+                        NSBezierPath(ovalIn: dotRect).fill()
+                        canvasImage?.unlockFocus()
+                        needsDisplay = true
+                    }
+                    currentPath = nil
+
+                case .eraser:
+                    if pointsAreEqual(startPoint, endPoint) {
+                        print("erase dot!")
+                        // Erase an eraser-sized area (15px)
+                        eraseDot(at: startPoint, radius: 7.5)
+                        needsDisplay = true
+                    }
                     currentPath = nil
                     
                 case .line, .rect, .roundRect, .ellipse:
-                    drawShape(to: canvasImage)
+                    print("shape dot!")
+                    if pointsAreEqual(startPoint, endPoint) {
+                        // Mark a single pixel
+                        initializeCanvasIfNeeded()
+                        canvasImage?.lockFocus()
+                        currentColor.set()
+                        let dotRect = NSRect(x: startPoint.x, y: startPoint.y, width: 1, height: 1)
+                        dotRect.fill()
+                        canvasImage?.unlockFocus()
+                    } else {
+                        drawShape(to: canvasImage)
+                    }
                     isDrawingShape = false
                     needsDisplay = true
                     
@@ -1431,6 +1462,11 @@ class CanvasView: NSView {
             return true // We handled it
         }
         return super.performKeyEquivalent(with: event)
+    }
+    
+    func pointsAreEqual(_ p1: NSPoint, _ p2: NSPoint) -> Bool {
+        print("Points:", Int(p1.x), Int(p2.x), Int(p1.y), Int(p2.y))
+        return Int(p1.x) == Int(p2.x) && Int(p1.y) == Int(p2.y)
     }
     
     @objc public func moveSelectionBy(dx: CGFloat, dy: CGFloat) {
