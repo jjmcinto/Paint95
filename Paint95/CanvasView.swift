@@ -65,7 +65,6 @@ class CanvasView: NSView {
         case middleLeft, middleRight
         case topLeft, topCenter, topRight
     }
-
     let handleSize: CGFloat = 5
     var activeResizeHandle: ResizeHandle? = nil
     var isResizingCanvas = false
@@ -84,6 +83,39 @@ class CanvasView: NSView {
             NSPoint(x: canvasRect.midX - offset, y: canvasRect.maxY),          // top-center
             NSPoint(x: canvasRect.maxX, y: canvasRect.maxY)                    // top-right
         ]
+    }
+    
+    //Zoom
+    var isZoomed: Bool = false
+    var zoomRect: NSRect = .zero
+    var zoomPreviewRect: NSRect = .zero
+    var mousePosition: NSPoint = .zero
+    
+    func saveCanvasToDefaultLocation() {
+        guard let canvasImage = canvasImage else {
+            print("No canvas image to save.")
+            return
+        }
+
+        // Create file path
+        let path = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Documents/Jeffrey/projects/PaintProgram/out.jpg")
+
+        // Convert NSImage to JPEG data
+        guard let tiffData = canvasImage.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData),
+              let jpegData = bitmap.representation(using: .jpeg, properties: [:]) else {
+            print("Failed to generate JPEG data.")
+            return
+        }
+
+        do {
+            try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try jpegData.write(to: path)
+            print("Canvas saved to \(path.path)")
+        } catch {
+            print("Save failed: \(error)")
+        }
     }
     
     func colorSelectedFromPalette(_ color: NSColor) {
@@ -106,6 +138,11 @@ class CanvasView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         NotificationCenter.default.addObserver(self, selector: #selector(colorPicked(_:)), name: .colorPicked, object: nil)
+        let trackingArea = NSTrackingArea(rect: self.bounds,
+                                          options: [.mouseMoved, .activeAlways, .inVisibleRect],
+                                          owner: self,
+                                          userInfo: nil)
+        self.addTrackingArea(trackingArea)
     }
 
     @objc func colorPicked(_ notification: Notification) {
@@ -132,12 +169,10 @@ class CanvasView: NSView {
     }
     
     func showColorSelectionWindow() {
-        print("showColorSelectionWindow")
         var rgbColor: [Double] = [0,0,0]
         
         if colorFromSelectionWindow {
             rgbColor = AppColorState.shared.rgb
-            print("Stored RGB")
         } else {
             // Approximate RGB from NSColor
             if let rgbColor = currentColor.usingColorSpace(.deviceRGB) {
@@ -146,7 +181,6 @@ class CanvasView: NSView {
                     Double(rgbColor.greenComponent * 255.0),
                     Double(rgbColor.blueComponent * 255.0)
                 ]
-                print("RGB from canvas")
             }
         }
         
@@ -185,47 +219,60 @@ class CanvasView: NSView {
     override var acceptsFirstResponder: Bool {
         return true
     }
-
+    
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
         clearCanvasRegion(rect: dirtyRect, lockFocus: false)
-        //NSColor.white.setFill()
-        //dirtyRect.fill()
 
         let imageSize = canvasImage?.size ?? .zero
         let imageRect = NSRect(origin: canvasRect.origin, size: imageSize)
         canvasImage?.draw(in: imageRect)
-        
+
+        // Zoomed view rendering
+        if isZoomed {
+            guard let image = canvasImage else { return }
+            let magnified = NSImage(size: canvasRect.size)
+            magnified.lockFocus()
+            image.draw(in: canvasRect, from: zoomRect, operation: .copy, fraction: 1.0)
+            magnified.unlockFocus()
+            magnified.draw(in: canvasRect)
+        } else {
+            canvasImage?.draw(in: canvasRect)
+            if currentTool == .zoom {
+                NSColor.black.setStroke()
+                let dashPattern: [CGFloat] = [5.0, 3.0]
+                let path = NSBezierPath(rect: zoomPreviewRect)
+                path.setLineDash(dashPattern, count: dashPattern.count, phase: 0)
+                path.lineWidth = 1
+                path.stroke()
+            }
+        }
+
+        // Selected image preview
         if let image = selectedImage, let io = selectedImageOrigin {
             let selectionFrame = NSRect(origin: io, size: image.size)
             let visiblePortion = selectionFrame.intersection(canvasRect)
-
             if !visiblePortion.isEmpty {
                 NSGraphicsContext.saveGraphicsState()
                 let clipPath = NSBezierPath(rect: canvasRect)
                 clipPath.addClip()
-
                 image.draw(at: io, from: .zero, operation: .sourceOver, fraction: 1.0)
-
                 NSGraphicsContext.restoreGraphicsState()
             }
-
-            // Draw a border around the (possibly clipped) selection
-            let displayRect = selectionFrame.intersection(canvasRect)
             NSColor.keyboardFocusIndicatorColor.setStroke()
-            let borderPath = NSBezierPath(rect: displayRect)
+            let borderPath = NSBezierPath(rect: selectionFrame.intersection(canvasRect))
             borderPath.lineWidth = 1
             borderPath.stroke()
         }
-        
-        // Optional: draw preview shape if in drawing mode
+
+        // Path preview (freehand)
         if let previewPath = currentPath {
             currentColor.setStroke()
             previewPath.stroke()
         }
 
-        //draw selection rectangle
+        // Selection rectangle
         if let image = selectedImage, let io = selectedImageOrigin {
             let rect = NSRect(origin: io, size: image.size)
             NSColor.black.setStroke()
@@ -242,39 +289,80 @@ class CanvasView: NSView {
             path.lineWidth = 1
             path.stroke()
         }
-        
+
+        // Curve preview
         if currentTool == .curve {
+            var start = curveStart
+            var end = curveEnd
+            var c1 = control1
+            var c2 = control2
+
+            if isZoomed {
+                let scaleX = canvasRect.width / zoomRect.width
+                let scaleY = canvasRect.height / zoomRect.height
+                let originX = zoomRect.origin.x
+                let originY = zoomRect.origin.y
+
+                func zoomed(_ p: NSPoint) -> NSPoint {
+                    return NSPoint(x: (p.x - originX) * scaleX,
+                                   y: (p.y - originY) * scaleY)
+                }
+
+                start = zoomed(start)
+                end = zoomed(end)
+                c1 = zoomed(c1)
+                c2 = zoomed(c2)
+            }
+
             let path = NSBezierPath()
             path.lineWidth = 2
             currentColor.set()
 
             switch curvePhase {
             case 0:
-                if curveStart != curveEnd || curveStart != .zero {
-                    path.move(to: curveStart)
-                    path.line(to: curveEnd)
+                if start != end || start != .zero {
+                    path.move(to: start)
+                    path.line(to: end)
                     path.stroke()
                 }
 
             case 1:
-                path.move(to: curveStart)
-                path.curve(to: curveEnd, controlPoint1: control1, controlPoint2: control1)
+                path.move(to: start)
+                path.curve(to: end, controlPoint1: c1, controlPoint2: c1)
                 path.stroke()
 
             case 2:
-                path.move(to: curveStart)
-                path.curve(to: curveEnd, controlPoint1: control1, controlPoint2: control2)
+                path.move(to: start)
+                path.curve(to: end, controlPoint1: c1, controlPoint2: c2)
                 path.stroke()
 
             default:
                 break
             }
-        } else if isDrawingShape {
+        }
+        // Shape preview (rect, ellipse, roundRect, line)
+        else if isDrawingShape {
             currentColor.set()
-            let shapePath = shapePathBetween(startPoint, endPoint)
-            shapePath?.lineWidth = 2
-            shapePath?.stroke()
-        } else if isCreatingText {
+            var start = startPoint
+            var end = endPoint
+
+            // Adjust preview coordinates if zoomed
+            if isZoomed {
+                let scaleX = canvasRect.width / zoomRect.width
+                let scaleY = canvasRect.height / zoomRect.height
+                start.x = (start.x - zoomRect.origin.x) * scaleX
+                start.y = (start.y - zoomRect.origin.y) * scaleY
+                end.x   = (end.x   - zoomRect.origin.x) * scaleX
+                end.y   = (end.y   - zoomRect.origin.y) * scaleY
+            }
+
+            if let shapePath = shapePathBetween(start, end) {
+                shapePath.lineWidth = 2
+                shapePath.stroke()
+            }
+        }
+        // Text preview box
+        else if isCreatingText {
             NSColor.gray.setStroke()
             let path = NSBezierPath(rect: textBoxRect)
             let dashPattern: [CGFloat] = [4, 2]
@@ -282,12 +370,10 @@ class CanvasView: NSView {
             path.lineWidth = 1
             path.stroke()
         }
-        
-        if isPastingImage, let image = pastedImage, let origin = pastedImageOrigin {
-            // Draw pasted image
-            image.draw(at: origin, from: .zero, operation: .sourceOver, fraction: 1.0)
 
-            // Draw dashed selection rectangle
+        // Paste preview
+        if isPastingImage, let image = pastedImage, let origin = pastedImageOrigin {
+            image.draw(at: origin, from: .zero, operation: .sourceOver, fraction: 1.0)
             NSColor.keyboardFocusIndicatorColor.setStroke()
             let dash: [CGFloat] = [5, 3]
             let selectionPath = NSBezierPath(rect: NSRect(origin: origin, size: image.size))
@@ -295,19 +381,30 @@ class CanvasView: NSView {
             selectionPath.lineWidth = 1
             selectionPath.stroke()
         }
-        
-        // Draw canvas boundary
+
+        // Canvas boundary
         NSColor.black.setStroke()
         NSBezierPath(rect: canvasRect).stroke()
 
-        // Draw resize handles
+        // Resize handles
         NSColor.systemBlue.setFill()
         for position in handlePositions {
             let rect = NSRect(x: position.x, y: position.y, width: handleSize, height: handleSize)
             NSBezierPath(rect: rect).fill()
         }
     }
-
+    
+    override func mouseMoved(with event: NSEvent) {
+        mousePosition = convert(event.locationInWindow, from: nil)
+        if currentTool == .zoom && !isZoomed { //draw Zoom preview rectangle
+            let zoomSize: CGFloat = 100
+            zoomPreviewRect = NSRect(x: mousePosition.x - zoomSize/2,
+                                     y: mousePosition.y - zoomSize/2,
+                                     width: zoomSize, height: zoomSize)
+            needsDisplay = true
+        }
+    }
+    
     override func mouseDown(with event: NSEvent) {
         // End text editing if applicable
         if let tv = textView {
@@ -321,7 +418,17 @@ class CanvasView: NSView {
                 textView = nil
             }
         } else {
-            let point = convert(event.locationInWindow, from: nil)
+            let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
+            if isZoomed {
+                print("DEBUG: Zoom mode MouseDown at canvas coords: (\(point.x), \(point.y))")
+            } else {
+                print("DEBUG: Normal mode MouseDown at canvas coords: (\(point.x), \(point.y))")
+            }
+            //var point = convert(event.locationInWindow, from: nil)
+            //if ![.line, .rect, .roundRect, .ellipse].contains(currentTool) {
+            //    //skip zoom-related adjustment on shape preview
+            //    point = convertZoomedPointToCanvas(point)
+            //}
             
             // Check for handle hit
             for (i, pos) in handlePositions.enumerated() {
@@ -414,6 +521,25 @@ class CanvasView: NSView {
                 endPoint = point
                 isDrawingShape = true
                 
+            case .zoom:
+                if isZoomed {
+                    // If already zoomed, clicking exits zoom mode
+                    isZoomed = false
+                    zoomRect = .zero
+                    needsDisplay = true
+                } else {
+                    // First click → zoom into a specific area
+                    let zoomSize: CGFloat = 100
+                    let point = convert(event.locationInWindow, from: nil)
+                    zoomRect = NSRect(x: point.x - zoomSize/2, y: point.y - zoomSize/2,
+                                      width: zoomSize, height: zoomSize)
+                    isZoomed = true
+                    print("DEBUG: Entering Zoom mode")
+                    print("DEBUG: Top-left: (\(zoomRect.origin.x), \(zoomRect.origin.y + zoomRect.size.height))")
+                    print("DEBUG: Bottom-right: (\(zoomRect.origin.x + zoomRect.size.width), \(zoomRect.origin.y))")
+                    needsDisplay = true
+                }
+                
             default:
                 break
             }
@@ -421,7 +547,7 @@ class CanvasView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
+        let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
 
         // 🎯 Handle canvas resize if a handle is active
         if isResizingCanvas, let handle = activeResizeHandle {
@@ -477,8 +603,8 @@ class CanvasView: NSView {
 
         // 🎯 Handle dragging selection
         if isDraggingSelection,
-           let startPoint = selectionDragStartPoint,
-           let imageOrigin = selectionImageStartOrigin {
+            let startPoint = selectionDragStartPoint,
+            let imageOrigin = selectionImageStartOrigin {
             let dx = point.x - startPoint.x
             let dy = point.y - startPoint.y
             selectedImageOrigin = NSPoint(x: imageOrigin.x + dx, y: imageOrigin.y + dy)
@@ -557,7 +683,12 @@ class CanvasView: NSView {
             isPastingImage = false
             needsDisplay = true
         } else {
-            let point = convert(event.locationInWindow, from: nil)
+            let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
+            if isZoomed {
+                print("DEBUG: Zoom mode MouseUp at canvas coords: (\(point.x), \(point.y))")
+            } else {
+                print("DEBUG: Normal mode MouseUp at canvas coords: (\(point.x), \(point.y))")
+            }
             if let image = selectedImage, let io = selectedImageOrigin {
                 let rect = NSRect(origin: io, size: image.size)
                 if !rect.contains(point) {
@@ -616,9 +747,6 @@ class CanvasView: NSView {
                         let transform = AffineTransform(translationByX: -canvasRect.origin.x, byY: -canvasRect.origin.y)
                         translatedPath.transform(using: transform)
                         
-                        print("CanvasImage size: \(canvasImage?.size ?? .zero)")
-                        print("CanvasRect size: \(canvasRect.size)")
-                        
                         canvasImage?.lockFocus()
                         currentColor.set()
                         translatedPath.stroke()
@@ -647,7 +775,18 @@ class CanvasView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        if isPastingActive, let characters = event.charactersIgnoringModifiers {
+        guard event.type == .keyDown else { return }
+        if event.modifierFlags.contains(.command) {
+            if let chars = event.charactersIgnoringModifiers?.lowercased() {
+                switch chars {
+                case "s":
+                    saveCanvasToDefaultLocation()
+                default:
+                    break
+                }
+            }
+        }
+        else if isPastingActive, let characters = event.charactersIgnoringModifiers {
             if characters == "\r" || characters == "\n" {
                 // Enter or Return pressed
                 commitPastedImage()
@@ -756,7 +895,6 @@ class CanvasView: NSView {
     }
 
     func commitSelection() {
-        print("commitSelection!")
         guard let image = selectedImage, let origin = selectedImageOrigin else { return }
         
         let imageRect = NSRect(origin: origin, size: image.size)
@@ -794,7 +932,6 @@ class CanvasView: NSView {
     }
 
     func commitPastedImage() {
-        print("commitPastedImage!")
         guard let image = pastedImage, let origin = pastedImageOrigin else { return }
 
         initializeCanvasIfNeeded()
@@ -1025,6 +1162,19 @@ class CanvasView: NSView {
         }
     }
     
+    func convertZoomedPointToCanvas(_ point: NSPoint) -> NSPoint {
+        guard isZoomed else { return point }
+
+        let scaleX = zoomRect.width / canvasRect.width
+        let scaleY = zoomRect.height / canvasRect.height
+        
+        // Convert from full-size display to original canvas coordinates
+        let adjustedX = zoomRect.origin.x + point.x * scaleX
+        let adjustedY = zoomRect.origin.y + point.y * scaleY
+
+        return NSPoint(x: adjustedX, y: adjustedY)
+    }
+    
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         resetCursorRects()
@@ -1037,6 +1187,15 @@ class CanvasView: NSView {
         let rect = NSRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)
         NSBezierPath(rect: rect).fill()
         canvasImage?.unlockFocus()
+    }
+    
+    func convertZoomedPoint(_ point: NSPoint) -> NSPoint {
+        // zoomRect maps to full canvasRect
+        let scaleX = canvasRect.width / zoomRect.width
+        let scaleY = canvasRect.height / zoomRect.height
+        let translatedX = zoomRect.origin.x + point.x / scaleX
+        let translatedY = zoomRect.origin.y + point.y / scaleY
+        return NSPoint(x: translatedX, y: translatedY)
     }
     
     func clearCanvas() {

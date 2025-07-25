@@ -15,5 +15,6 @@ enum PaintTool {
     case rect
     case ellipse
     case eyeDropper
+    case spray
 }
 

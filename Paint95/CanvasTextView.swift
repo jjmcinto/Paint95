@@ -1,6 +1,7 @@
 import Cocoa
 
 class CanvasTextView: NSTextView {
+    override var acceptsFirstResponder: Bool { true }
     override func keyDown(with event: NSEvent) {
         let isReturn = event.keyCode == 36 // Return key
         let isShiftHeld = event.modifierFlags.contains(.shift)

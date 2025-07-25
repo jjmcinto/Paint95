@@ -13,7 +13,7 @@ class ToolbarView: NSView {
     let tools: [PaintTool] = [
         .pencil, .brush, .eraser, .fill, .text,
         .line, .curve, .rect, .ellipse, .roundRect,
-        .eyeDropper, .select, .zoom
+        .eyeDropper, .select, .zoom, .spray
     ]
     
     let toolIcons: [PaintTool: String] = [
@@ -28,7 +28,9 @@ class ToolbarView: NSView {
         .roundRect: "roundRect",
         .select: "select",
         .text: "text",
-        .eyeDropper: "eyeDropper"
+        .eyeDropper: "eyeDropper",
+        .zoom: "zoom",
+        .spray: "spray"
     ]
 
     override func draw(_ dirtyRect: NSRect) {
@@ -88,7 +90,7 @@ class ToolbarView: NSView {
         let column = Int(locationInView.x / cellSize)
         let row = Int(locationInView.y / cellSize)
         let index = row * columns + column
-
+        
         if tools.indices.contains(index) {
             let tool = tools[index]
             selectedToolIndex = index

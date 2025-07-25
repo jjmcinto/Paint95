@@ -16,17 +16,6 @@ class ColorSelectionViewController: NSViewController {
         self.onColorSelected = onColorSelected
         super.init(nibName: nil, bundle: nil)
     }
-    /*
-    init(initialColor: NSColor, onColorSelected: @escaping (NSColor) -> Void) {
-        self.initialColor = initialColor
-        self.onColorSelected = onColorSelected
-        redField.doubleValue = SharedColor.rgb[0]
-        greenField.doubleValue = SharedColor.rgb[1]
-        blueField.doubleValue = SharedColor.rgb[2]
-        super.init(nibName: nil, bundle: nil)
-        updatePreviewColor()
-    }
-    */
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
