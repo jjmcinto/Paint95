@@ -91,6 +91,12 @@ class CanvasView: NSView {
     var zoomPreviewRect: NSRect = .zero
     var mousePosition: NSPoint = .zero
     
+    //spray paint
+    var sprayTimer: Timer?
+    let sprayRadius: CGFloat = 10
+    let sprayDensity: Int = 30
+    var currentSprayPoint: NSPoint = .zero
+    
     func saveCanvasToDefaultLocation() {
         guard let canvasImage = canvasImage else {
             print("No canvas image to save.")
@@ -478,6 +484,10 @@ class CanvasView: NSView {
                     self.window?.makeFirstResponder(self)
                 }
                 
+            case .spray:
+                currentSprayPoint = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
+                startSpray()
+            
             case .text:
                 startPoint = point
                 isCreatingText = true
@@ -526,9 +536,6 @@ class CanvasView: NSView {
                     isZoomed = true
                     needsDisplay = true
                 }
-                
-            default:
-                break
             }
         }
     }
@@ -607,6 +614,9 @@ class CanvasView: NSView {
                 selectionRect = rectBetween(startPoint, and: endPoint)
                 needsDisplay = true
             }
+            
+        case .spray:
+            currentSprayPoint = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
 
         case .text:
             if isCreatingText {
@@ -696,6 +706,9 @@ class CanvasView: NSView {
                     
                     needsDisplay = true
                     
+                case .spray:
+                    stopSpray()
+                
                 case .text:
                     if isCreatingText && textBoxRect != .zero {
                         createTextView(in: textBoxRect)
@@ -705,7 +718,6 @@ class CanvasView: NSView {
                     
                 case .pencil:
                     if pointsAreEqual(startPoint, endPoint) {
-                        print("pencil dot!")
                         // Mark one pixel
                         initializeCanvasIfNeeded()
                         canvasImage?.lockFocus()
@@ -719,7 +731,6 @@ class CanvasView: NSView {
 
                 case .brush:
                     if pointsAreEqual(startPoint, endPoint) {
-                        print("brush dot!")
                         // Draw a brush-sized dot (5px)
                         initializeCanvasIfNeeded()
                         canvasImage?.lockFocus()
@@ -736,7 +747,6 @@ class CanvasView: NSView {
 
                 case .eraser:
                     if pointsAreEqual(startPoint, endPoint) {
-                        print("erase dot!")
                         // Erase an eraser-sized area (15px)
                         eraseDot(at: startPoint, radius: 7.5)
                         needsDisplay = true
@@ -744,7 +754,6 @@ class CanvasView: NSView {
                     currentPath = nil
                     
                 case .line, .rect, .roundRect, .ellipse:
-                    print("shape dot!")
                     if pointsAreEqual(startPoint, endPoint) {
                         // Mark a single pixel
                         initializeCanvasIfNeeded()
@@ -1437,6 +1446,35 @@ class CanvasView: NSView {
         needsDisplay = true
     }
     
+    func startSpray() {
+        stopSpray() // Stop existing timer
+        sprayTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            self?.spray()
+        }
+    }
+
+    func spray() {
+        initializeCanvasIfNeeded()
+        canvasImage?.lockFocus()
+        currentColor.setFill()
+
+        for _ in 0..<sprayDensity {
+            let angle = CGFloat.random(in: 0..<2*CGFloat.pi)
+            let radius = CGFloat.random(in: 0..<sprayRadius)
+            let x = currentSprayPoint.x + radius * cos(angle)
+            let y = currentSprayPoint.y + radius * sin(angle)
+            NSBezierPath(ovalIn: NSRect(x: x, y: y, width: 1, height: 1)).fill()
+        }
+
+        canvasImage?.unlockFocus()
+        needsDisplay = true
+    }
+
+    func stopSpray() {
+        sprayTimer?.invalidate()
+        sprayTimer = nil
+    }
+    
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard event.type == .keyDown else { return false }
 
@@ -1465,7 +1503,6 @@ class CanvasView: NSView {
     }
     
     func pointsAreEqual(_ p1: NSPoint, _ p2: NSPoint) -> Bool {
-        print("Points:", Int(p1.x), Int(p2.x), Int(p1.y), Int(p2.y))
         return Int(p1.x) == Int(p2.x) && Int(p1.y) == Int(p2.y)
     }
     
