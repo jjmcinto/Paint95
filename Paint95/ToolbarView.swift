@@ -32,19 +32,44 @@ class ToolbarView: NSView {
         .zoom: "zoom",
         .spray: "spray"
     ]
+    
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        NotificationCenter.default.addObserver(self,
+                                               selector: #selector(toolChanged(_:)),
+                                               name: .toolChanged,
+                                               object: nil)
+    }
+    
+    required init?(coder decoder: NSCoder) {
+        super.init(coder: decoder)
+        NotificationCenter.default.addObserver(self,
+                                               selector: #selector(toolChanged(_:)),
+                                               name: .toolChanged,
+                                               object: nil)
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    @objc private func toolChanged(_ notification: Notification) {
+        guard let newTool = notification.object as? PaintTool else { return }
+        if let index = tools.firstIndex(of: newTool) {
+            selectedToolIndex = index
+            setNeedsDisplay(bounds)
+        }
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        // You can draw backgrounds or borders here if desired
         
         let cellSize: CGFloat = 40
         let columns = 2
         let spacing: CGFloat = 0
         
         NSColor(white: 0.9, alpha: 1.0).setFill()
-        let fillRect = self.bounds
-        NSColor(white: 0.9, alpha: 1.0).setFill()
-        fillRect.fill()
+        bounds.fill()
         
         for (index, tool) in tools.enumerated() {
             let row = index / columns
@@ -54,7 +79,7 @@ class ToolbarView: NSView {
             let y = CGFloat(row) * (cellSize + spacing)
             let frame = NSRect(x: x, y: y, width: cellSize, height: cellSize)
 
-            // Draw a highlight if selected
+            // Draw highlight if selected
             if index == selectedToolIndex {
                 NSColor.selectedControlColor.setStroke()
                 let path = NSBezierPath(rect: frame)
@@ -62,11 +87,11 @@ class ToolbarView: NSView {
                 path.stroke()
             }
             
-            // 🔄 Load image from dictionary
+            // Load image for tool
             if let imageName = toolIcons[tool], let image = NSImage(named: imageName) {
                 image.draw(in: frame)
             } else {
-                // ✏️ Fallback label if image is missing
+                // Fallback text if image is missing
                 let label = NSString(string: "\(tool)")
                 let attributes: [NSAttributedString.Key: Any] = [
                     .font: NSFont.systemFont(ofSize: 10),
@@ -95,8 +120,7 @@ class ToolbarView: NSView {
             let tool = tools[index]
             selectedToolIndex = index
             delegate?.toolSelected(tool)
-            setNeedsDisplay(bounds) // Refresh the toolbar to highlight selection
+            setNeedsDisplay(bounds)
         }
     }
 }
-

@@ -11,6 +11,10 @@ extension CanvasView: NSTextViewDelegate {
     }
 }
 
+extension Notification.Name {
+    static let toolChanged = Notification.Name("PaintToolChangedNotification")
+}
+
 class CanvasView: NSView {
     
     weak var delegate: CanvasViewDelegate?
@@ -1670,12 +1674,6 @@ class CanvasView: NSView {
 
         if commandKey {
             switch char {
-            case "z":
-                undo();
-                return true
-            case "y":
-                redo();
-                return true
             case "x": // ⌘X
                 cutSelection()
                 return true
@@ -1685,14 +1683,39 @@ class CanvasView: NSView {
             case "v": // ⌘V
                 pasteImage()
                 return true
+            case "a": // ⌘A - Select All and activate Select tool
+                selectAllCanvas()
+                currentTool = .select
+                NotificationCenter.default.post(name: .toolChanged, object: PaintTool.select)
+                needsDisplay = true
+                return true
+            case "z": // ⌘Z - Undo
+                undo()
+                return true
+            case "y": // ⌘Y - Redo
+                redo()
+                return true
             default:
                 break
             }
         } else if event.keyCode == 51 { // Delete key
             handleDeleteKey()
-            return true // We handled it
+            return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    private func selectAllCanvas() {
+        let rect = canvasRect
+        selectionRect = rect
+
+        let image = NSImage(size: rect.size)
+        image.lockFocus()
+        canvasImage?.draw(at: .zero, from: rect, operation: .copy, fraction: 1.0)
+        image.unlockFocus()
+
+        selectedImage = image
+        selectedImageOrigin = rect.origin
     }
     
     func pointsAreEqual(_ p1: NSPoint, _ p2: NSPoint) -> Bool {
