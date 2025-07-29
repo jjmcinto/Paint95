@@ -107,6 +107,12 @@ class CanvasView: NSView {
     let sprayDensity: Int = 30
     var currentSprayPoint: NSPoint = .zero
     
+    // Undo/Redo
+    private var undoStack: [NSImage] = []
+    private var redoStack: [NSImage] = []
+    private let maxUndoSteps = 5
+    private var cancelCurvePreview = false
+    
     func saveCanvasToDefaultLocation() {
         guard let canvasImage = canvasImage else {
             print("No canvas image to save.")
@@ -240,10 +246,7 @@ class CanvasView: NSView {
         super.draw(dirtyRect)
 
         clearCanvasRegion(rect: dirtyRect, lockFocus: false)
-
-        let imageSize = canvasImage?.size ?? .zero
-        let imageRect = NSRect(origin: canvasRect.origin, size: imageSize)
-
+        
         // === Canvas image drawing ===
         if isResizingCanvas {
             // Draw the existing canvas image in its original coordinate space (no scaling)
@@ -327,8 +330,8 @@ class CanvasView: NSView {
             previewPath.stroke()
         }
 
-        // === Curve preview ===
-        if currentTool == .curve {
+        // === Curve preview (always show active curve stage) ===
+        if currentTool == .curve && !cancelCurvePreview {
             var start = curveStart
             var end = curveEnd
             var c1 = control1
@@ -356,31 +359,31 @@ class CanvasView: NSView {
             currentColor.set()
 
             switch curvePhase {
-            case 0:
-                if start != end || start != .zero {
+            case 0: // Initial straight line
+                if start != end {
                     path.move(to: start)
                     path.line(to: end)
                     path.stroke()
                 }
-            case 1:
+            case 1: // First control point defined
                 path.move(to: start)
                 path.curve(to: end, controlPoint1: c1, controlPoint2: c1)
                 path.stroke()
-            case 2:
+            case 2: // Second control point defined
                 path.move(to: start)
                 path.curve(to: end, controlPoint1: c1, controlPoint2: c2)
                 path.stroke()
             default:
                 break
             }
+            cancelCurvePreview = false  // reset after any temporary cancel
         }
-        // === Shape preview (rect, ellipse, roundRect, line) ===
         else if isDrawingShape {
+            // === Shape preview (rect, ellipse, roundRect, line) ===
             currentColor.set()
             var start = startPoint
             var end = endPoint
 
-            // Adjust preview coordinates if zoomed
             if isZoomed {
                 let scaleX = canvasRect.width / zoomRect.width
                 let scaleY = canvasRect.height / zoomRect.height
@@ -395,8 +398,8 @@ class CanvasView: NSView {
                 shapePath.stroke()
             }
         }
-        // === Text preview box ===
         else if isCreatingText {
+            // === Text preview box ===
             NSColor.gray.setStroke()
             let path = NSBezierPath(rect: textBoxRect)
             let dashPattern: [CGFloat] = [4, 2]
@@ -427,7 +430,7 @@ class CanvasView: NSView {
             NSBezierPath(rect: rect).fill()
         }
     }
-
+    
     override func mouseDown(with event: NSEvent) {
         if let tv = textView {
             if tv.window?.firstResponder == tv {
@@ -509,35 +512,49 @@ class CanvasView: NSView {
                 selectedImage = nil
                 self.window?.makeFirstResponder(self)
             }
+
         case .spray:
             currentSprayPoint = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
             startSpray()
+
         case .text:
             startPoint = point
             isCreatingText = true
+
         case .eyeDropper:
             if let picked = pickColor(at: point) {
                 currentColor = picked
                 NotificationCenter.default.post(name: .colorPicked, object: picked)
                 colorFromSelectionWindow = false
             }
+
         case .pencil, .brush, .eraser:
+            // Make one undo checkpoint for the entire stroke
+            saveUndoState()
             startPoint = point
             currentPath = NSBezierPath()
             currentPath?.move(to: point)
+
         case .fill:
+            saveUndoState()
             floodFill(from: point, with: currentColor)
+
         case .curve:
             switch curvePhase {
             case 0:
+                saveUndoState() // Only one checkpoint at curve start
                 curveStart = point
                 curveEnd = point
-            default: break
+            default:
+                break
             }
+
         case .line, .rect, .roundRect, .ellipse:
+            saveUndoState()
             startPoint = point
             endPoint = point
             isDrawingShape = true
+
         case .zoom:
             if isZoomed {
                 isZoomed = false
@@ -554,6 +571,7 @@ class CanvasView: NSView {
         }
         window?.invalidateCursorRects(for: self)
     }
+
 
     override func mouseDragged(with event: NSEvent) {
         let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
@@ -702,27 +720,34 @@ class CanvasView: NSView {
                 needsDisplay = true
             }
             window?.invalidateCursorRects(for: self)
+
         case .spray:
             currentSprayPoint = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
+
         case .text:
             if isCreatingText {
                 textBoxRect = rectBetween(startPoint, and: point)
                 needsDisplay = true
             }
+
         case .pencil, .brush:
             currentPath?.line(to: point)
             drawCurrentPathToCanvas()
             currentPath = NSBezierPath()
             currentPath?.move(to: point)
+
         case .eraser:
+            // Eraser: perform same drawing but without adding new undo checkpoints mid-stroke
             currentPath?.line(to: point)
+            // We still use drawCurrentPathToCanvas (no undo checkpoint inside)
             drawCurrentPathToCanvas()
-            eraseDot(at: point)
             currentPath = NSBezierPath()
             currentPath?.move(to: point)
+
         case .line, .rect, .roundRect, .ellipse:
             endPoint = point
             needsDisplay = true
+
         case .curve:
             switch curvePhase {
             case 0: curveEnd = point
@@ -731,11 +756,13 @@ class CanvasView: NSView {
             default: break
             }
             needsDisplay = true
+
         default:
             break
         }
     }
-    
+
+
     override func mouseUp(with event: NSEvent) {
         if isResizingCanvas {
             isResizingCanvas = false
@@ -748,7 +775,6 @@ class CanvasView: NSView {
         if isResizingSelection {
             isResizingSelection = false
             activeResizeHandle = nil
-            // Keep selection visible after resize, no immediate commit
             needsDisplay = true
             return
         }
@@ -891,6 +917,7 @@ class CanvasView: NSView {
             break
         }
     }
+
     
     override func mouseMoved(with event: NSEvent) {
         super.mouseMoved(with: event)
@@ -1018,8 +1045,8 @@ class CanvasView: NSView {
     }
 
     func commitSelection() {
+        saveUndoState()
         guard let image = selectedImage, let origin = selectedImageOrigin else { return }
-        
         let imageRect = NSRect(origin: origin, size: image.size)
         let intersection = imageRect.intersection(canvasRect)
 
@@ -1055,8 +1082,8 @@ class CanvasView: NSView {
     }
 
     func commitPastedImage() {
+        saveUndoState()
         guard let image = pastedImage, let origin = pastedImageOrigin else { return }
-
         initializeCanvasIfNeeded()
         canvasImage?.lockFocus()
         image.draw(at: origin, from: .zero, operation: .sourceOver, fraction: 1.0)
@@ -1099,6 +1126,9 @@ class CanvasView: NSView {
         let text = tv.string
         guard !text.isEmpty else { return }
         
+        // Make undo checkpoint for adding text
+        saveUndoState()
+
         initializeCanvasIfNeeded()
         canvasImage?.lockFocus()
 
@@ -1113,6 +1143,52 @@ class CanvasView: NSView {
         canvasImage?.unlockFocus()
         tv.removeFromSuperview()
         textView = nil
+        needsDisplay = true
+    }
+    
+    // Save current state before modifying canvasImage
+    private func saveUndoState() {
+        guard let currentImage = canvasImage else { return }
+        if undoStack.count >= maxUndoSteps {
+            undoStack.removeFirst() // keep last 5 steps
+        }
+        undoStack.append(currentImage.copy() as! NSImage)
+        redoStack.removeAll() // clear redo on new change
+    }
+    
+    @objc func undo() {
+        guard let lastImage = undoStack.popLast() else { return }
+        if let currentImage = canvasImage {
+            redoStack.append(currentImage.copy() as! NSImage)
+        }
+        canvasImage = lastImage.copy() as? NSImage
+        
+        // Reset curve state after undo
+        curvePhase = 0
+        curveStart = .zero
+        curveEnd = .zero
+        control1 = .zero
+        control2 = .zero
+        cancelCurvePreview = false
+
+        needsDisplay = true
+    }
+    
+    @objc func redo() {
+        guard let nextImage = redoStack.popLast() else { return }
+        if let currentImage = canvasImage {
+            undoStack.append(currentImage.copy() as! NSImage)
+        }
+        canvasImage = nextImage.copy() as? NSImage
+        
+        // Reset curve state after redo
+        curvePhase = 0
+        curveStart = .zero
+        curveEnd = .zero
+        control1 = .zero
+        control2 = .zero
+        cancelCurvePreview = false
+
         needsDisplay = true
     }
     
@@ -1169,6 +1245,7 @@ class CanvasView: NSView {
     
     private func drawShape(to image: NSImage?) {
         guard let image = image else { return }
+        saveUndoState()
 
         let path = shapePathBetween(startPoint, endPoint)
         path?.lineWidth = 2
@@ -1248,15 +1325,12 @@ class CanvasView: NSView {
         case .pencil:
             strokeColor = currentColor
             lineWidth = 1
-
         case .brush:
             strokeColor = currentColor
             lineWidth = 5
-
         case .eraser:
             strokeColor = .white
             lineWidth = 15
-
         default:
             return
         }
@@ -1332,6 +1406,7 @@ class CanvasView: NSView {
     }
     
     private func eraseDot(at point: NSPoint, radius: CGFloat = 7.5) {
+        saveUndoState()
         initializeCanvasIfNeeded()
         canvasImage?.lockFocus()
         NSColor.white.set()
@@ -1350,6 +1425,7 @@ class CanvasView: NSView {
     }
     
     func clearCanvas() {
+        saveUndoState()
         drawnPaths.removeAll()
         canvasImage = nil
         needsDisplay = true
@@ -1366,6 +1442,7 @@ class CanvasView: NSView {
     }
     
     func deleteSelectionOrPastedImage() {
+        saveUndoState()
         if isPastingActive {
             // Clear the uncommitted pasted content
             pastedImage = nil
@@ -1454,6 +1531,7 @@ class CanvasView: NSView {
     }
 
     func floodFill(from point: NSPoint, with fillColor: NSColor) {
+        saveUndoState()
         let width = Int(canvasRect.width)
         let height = Int(canvasRect.height)
         
@@ -1594,6 +1672,12 @@ class CanvasView: NSView {
 
         if commandKey {
             switch char {
+            case "z":
+                undo();
+                return true
+            case "y":
+                redo();
+                return true
             case "x": // ⌘X
                 cutSelection()
                 return true
