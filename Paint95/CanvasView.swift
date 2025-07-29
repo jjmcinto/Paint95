@@ -253,11 +253,9 @@ class CanvasView: NSView {
         
         // === Canvas image drawing ===
         if isResizingCanvas {
-            // Draw the existing canvas image in its original coordinate space (no scaling)
             let originalRect = NSRect(origin: .zero, size: canvasImage?.size ?? .zero)
             canvasImage?.draw(in: originalRect)
 
-            // Draw preview of the *new* canvas boundary
             NSColor.red.setStroke()
             let dashPattern: [CGFloat] = [5.0, 3.0]
             let path = NSBezierPath(rect: canvasRect)
@@ -274,11 +272,9 @@ class CanvasView: NSView {
             canvasImage?.draw(in: canvasRect)
             if currentTool == .zoom {
                 NSColor.black.setStroke()
-                let dashPattern: [CGFloat] = [5.0, 3.0]
                 let path = NSBezierPath(rect: zoomPreviewRect)
-                path.setLineDash(dashPattern, count: dashPattern.count, phase: 0)
                 path.lineWidth = 1
-                path.stroke()
+                path.stroke()  // now solid line, no dashes
             }
         }
 
@@ -294,7 +290,6 @@ class CanvasView: NSView {
                 NSGraphicsContext.restoreGraphicsState()
             }
 
-            // Draw dashed selection border
             NSColor.black.setStroke()
             let dashPattern: [CGFloat] = [5.0, 3.0]
             let path = NSBezierPath(rect: selectionFrame.intersection(canvasRect))
@@ -302,7 +297,6 @@ class CanvasView: NSView {
             path.lineWidth = 1
             path.stroke()
 
-            // Draw resize handles
             let handleSize: CGFloat = 6
             let handles = [
                 NSPoint(x: selectionFrame.minX - handleSize/2, y: selectionFrame.minY - handleSize/2),
@@ -319,7 +313,6 @@ class CanvasView: NSView {
                 NSBezierPath(rect: NSRect(x: p.x, y: p.y, width: handleSize, height: handleSize)).fill()
             }
         } else if let rect = selectionRect {
-            // While dragging to create a selection
             NSColor.black.setStroke()
             let dashPattern: [CGFloat] = [5.0, 3.0]
             let path = NSBezierPath(rect: rect)
@@ -328,7 +321,6 @@ class CanvasView: NSView {
             path.stroke()
         }
 
-        // === Path preview (freehand) ===
         if let previewPath = currentPath {
             currentColor.setStroke()
             previewPath.stroke()
@@ -363,27 +355,26 @@ class CanvasView: NSView {
             currentColor.set()
 
             switch curvePhase {
-            case 0: // Initial straight line
+            case 0:
                 if start != end {
                     path.move(to: start)
                     path.line(to: end)
                     path.stroke()
                 }
-            case 1: // First control point defined
+            case 1:
                 path.move(to: start)
                 path.curve(to: end, controlPoint1: c1, controlPoint2: c1)
                 path.stroke()
-            case 2: // Second control point defined
+            case 2:
                 path.move(to: start)
                 path.curve(to: end, controlPoint1: c1, controlPoint2: c2)
                 path.stroke()
             default:
                 break
             }
-            cancelCurvePreview = false  // reset after any temporary cancel
+            cancelCurvePreview = false
         }
         else if isDrawingShape {
-            // === Shape preview (rect, ellipse, roundRect, line) ===
             currentColor.set()
             var start = startPoint
             var end = endPoint
@@ -403,7 +394,6 @@ class CanvasView: NSView {
             }
         }
         else if isCreatingText {
-            // === Text preview box ===
             NSColor.gray.setStroke()
             let path = NSBezierPath(rect: textBoxRect)
             let dashPattern: [CGFloat] = [4, 2]
@@ -412,7 +402,6 @@ class CanvasView: NSView {
             path.stroke()
         }
 
-        // === Paste preview ===
         if isPastingImage, let image = pastedImage, let origin = pastedImageOrigin {
             image.draw(at: origin, from: .zero, operation: .sourceOver, fraction: 1.0)
             NSColor.keyboardFocusIndicatorColor.setStroke()
@@ -423,11 +412,9 @@ class CanvasView: NSView {
             selectionPath.stroke()
         }
 
-        // === Canvas boundary ===
         NSColor.black.setStroke()
         NSBezierPath(rect: canvasRect).stroke()
 
-        // === Canvas resize handles ===
         NSColor.systemBlue.setFill()
         for position in handlePositions {
             let rect = NSRect(x: position.x, y: position.y, width: handleSize, height: handleSize)
@@ -919,10 +906,23 @@ class CanvasView: NSView {
             break
         }
     }
-
     
     override func mouseMoved(with event: NSEvent) {
         super.mouseMoved(with: event)
+
+        let point = convert(event.locationInWindow, from: nil)
+
+        if currentTool == .zoom {
+            let zoomSize: CGFloat = 100
+            zoomPreviewRect = NSRect(
+                x: point.x - zoomSize / 2,
+                y: point.y - zoomSize / 2,
+                width: zoomSize,
+                height: zoomSize
+            )
+            needsDisplay = true
+        }
+
         window?.invalidateCursorRects(for: self)
     }
     
