@@ -567,6 +567,7 @@ class CanvasView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
+        let shiftPressed = event.modifierFlags.contains(.shift)
 
         // === Selection resizing (live destructive) ===
         if isResizingSelection, let handle = activeResizeHandle {
@@ -603,6 +604,20 @@ class CanvasView: NSView {
                 newRect.size.height -= dy
             }
 
+            // === Shift for maintaining aspect ratio ===
+            if shiftPressed {
+                let aspect = originalSelectionRect.width / max(originalSelectionRect.height, 1)
+                if handle == .topLeft || handle == .topRight || handle == .bottomLeft || handle == .bottomRight {
+                    let widthSign: CGFloat = newRect.width >= 0 ? 1 : -1
+                    let heightSign: CGFloat = newRect.height >= 0 ? 1 : -1
+                    if abs(newRect.width) > abs(newRect.height * aspect) {
+                        newRect.size.height = abs(newRect.width) / aspect * heightSign
+                    } else {
+                        newRect.size.width = abs(newRect.height * aspect) * widthSign
+                    }
+                }
+            }
+
             // Clear original content immediately
             initializeCanvasIfNeeded()
             canvasImage?.lockFocus()
@@ -624,6 +639,7 @@ class CanvasView: NSView {
                 scaledImage.draw(in: newRect)
                 canvasImage?.unlockFocus()
 
+                // Update selection for preview
                 selectedImage = scaledImage
                 selectedImageOrigin = newRect.origin
                 selectionRect = newRect
@@ -633,7 +649,7 @@ class CanvasView: NSView {
             return
         }
 
-        // === Canvas resizing ===
+        // === Canvas resize ===
         if isResizingCanvas, let handle = activeResizeHandle {
             let dx = point.x - dragStartPoint.x
             let dy = point.y - dragStartPoint.y
@@ -684,7 +700,7 @@ class CanvasView: NSView {
             return
         }
 
-        // === Dragging selection (move, single checkpoint already saved) ===
+        // === Dragging selection ===
         if isDraggingSelection,
            let startPoint = selectionDragStartPoint,
            let imageOrigin = selectionImageStartOrigin,
@@ -696,7 +712,6 @@ class CanvasView: NSView {
 
             selectedImageOrigin = newOrigin
             selectionRect = NSRect(origin: newOrigin, size: selectedImage.size)
-
             needsDisplay = true
             return
         }
@@ -709,34 +724,47 @@ class CanvasView: NSView {
                 selectionRect = rectBetween(startPoint, and: endPoint)
                 needsDisplay = true
             }
-            window?.invalidateCursorRects(for: self)
-
         case .spray:
             currentSprayPoint = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
-
         case .text:
             if isCreatingText {
                 textBoxRect = rectBetween(startPoint, and: point)
                 needsDisplay = true
             }
-
         case .pencil, .brush:
             currentPath?.line(to: point)
             drawCurrentPathToCanvas()
             currentPath = NSBezierPath()
             currentPath?.move(to: point)
-
         case .eraser:
             currentPath?.line(to: point)
             drawCurrentPathToCanvas()
             eraseDot(at: point)
             currentPath = NSBezierPath()
             currentPath?.move(to: point)
-
         case .line, .rect, .roundRect, .ellipse:
             endPoint = point
+            // === Shift constraints for shapes ===
+            if shiftPressed {
+                let dx = endPoint.x - startPoint.x
+                let dy = endPoint.y - startPoint.y
+                switch currentTool {
+                case .line:
+                    // Constrain to 45-degree increments
+                    let angle = atan2(dy, dx)
+                    let snap = round(angle / (.pi / 4)) * (.pi / 4)
+                    let length = hypot(dx, dy)
+                    endPoint = NSPoint(x: startPoint.x + cos(snap) * length,
+                                       y: startPoint.y + sin(snap) * length)
+                case .rect, .roundRect, .ellipse:
+                    // Force square/circle
+                    let size = max(abs(dx), abs(dy))
+                    endPoint.x = startPoint.x + (dx >= 0 ? size : -size)
+                    endPoint.y = startPoint.y + (dy >= 0 ? size : -size)
+                default: break
+                }
+            }
             needsDisplay = true
-
         case .curve:
             switch curvePhase {
             case 0: curveEnd = point
@@ -745,12 +773,9 @@ class CanvasView: NSView {
             default: break
             }
             needsDisplay = true
-
-        default:
-            break
+        default: break
         }
     }
-
 
     override func mouseUp(with event: NSEvent) {
         if isResizingCanvas {
@@ -794,6 +819,8 @@ class CanvasView: NSView {
         }
 
         let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
+        let shiftPressed = event.modifierFlags.contains(.shift)
+
         if let image = selectedImage, let io = selectedImageOrigin {
             let rect = NSRect(origin: io, size: image.size)
             if !rect.contains(point) {
@@ -808,6 +835,7 @@ class CanvasView: NSView {
         }
 
         endPoint = point
+
         switch currentTool {
         case .select:
             guard let rect = selectionRect else { return }
@@ -819,14 +847,17 @@ class CanvasView: NSView {
             selectedImageOrigin = rect.origin
             window?.invalidateCursorRects(for: self)
             needsDisplay = true
+
         case .spray:
             stopSpray()
+
         case .text:
             if isCreatingText && textBoxRect != .zero {
                 createTextView(in: textBoxRect)
                 textBoxRect = .zero
                 isCreatingText = false
             }
+
         case .pencil:
             if pointsAreEqual(startPoint, endPoint) {
                 initializeCanvasIfNeeded()
@@ -838,6 +869,7 @@ class CanvasView: NSView {
                 needsDisplay = true
             }
             currentPath = nil
+
         case .brush:
             if pointsAreEqual(startPoint, endPoint) {
                 initializeCanvasIfNeeded()
@@ -852,14 +884,37 @@ class CanvasView: NSView {
                 needsDisplay = true
             }
             currentPath = nil
+
         case .eraser:
             if pointsAreEqual(startPoint, endPoint) {
                 eraseDot(at: startPoint, radius: 7.5)
                 needsDisplay = true
             }
             currentPath = nil
+
         case .line, .rect, .roundRect, .ellipse:
-            if pointsAreEqual(startPoint, endPoint) {
+            var finalEnd = endPoint
+
+            // === Shift constraints at commit time ===
+            if shiftPressed {
+                let dx = finalEnd.x - startPoint.x
+                let dy = finalEnd.y - startPoint.y
+                switch currentTool {
+                case .line:
+                    let angle = atan2(dy, dx)
+                    let snap = round(angle / (.pi / 4)) * (.pi / 4)
+                    let length = hypot(dx, dy)
+                    finalEnd = NSPoint(x: startPoint.x + cos(snap) * length,
+                                       y: startPoint.y + sin(snap) * length)
+                case .rect, .roundRect, .ellipse:
+                    let size = max(abs(dx), abs(dy))
+                    finalEnd.x = startPoint.x + (dx >= 0 ? size : -size)
+                    finalEnd.y = startPoint.y + (dy >= 0 ? size : -size)
+                default: break
+                }
+            }
+
+            if pointsAreEqual(startPoint, finalEnd) {
                 initializeCanvasIfNeeded()
                 canvasImage?.lockFocus()
                 currentColor.set()
@@ -867,10 +922,12 @@ class CanvasView: NSView {
                 dotRect.fill()
                 canvasImage?.unlockFocus()
             } else {
+                endPoint = finalEnd // use corrected endPoint
                 drawShape(to: canvasImage)
             }
             isDrawingShape = false
             needsDisplay = true
+
         case .curve:
             switch curvePhase {
             case 0:
