@@ -574,11 +574,10 @@ class CanvasView: NSView {
         window?.invalidateCursorRects(for: self)
     }
 
-    
     override func mouseDragged(with event: NSEvent) {
         let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
 
-        // Selection resizing (live destructive)
+        // === Selection resizing (live destructive) ===
         if isResizingSelection, let handle = activeResizeHandle {
             let dx = point.x - resizeStartPoint.x
             let dy = point.y - resizeStartPoint.y
@@ -634,7 +633,6 @@ class CanvasView: NSView {
                 scaledImage.draw(in: newRect)
                 canvasImage?.unlockFocus()
 
-                // Update selection for preview
                 selectedImage = scaledImage
                 selectedImageOrigin = newRect.origin
                 selectionRect = newRect
@@ -644,7 +642,7 @@ class CanvasView: NSView {
             return
         }
 
-        // Canvas resize
+        // === Canvas resizing ===
         if isResizingCanvas, let handle = activeResizeHandle {
             let dx = point.x - dragStartPoint.x
             let dy = point.y - dragStartPoint.y
@@ -688,14 +686,14 @@ class CanvasView: NSView {
             return
         }
 
-        // Dragging pasted image
+        // === Dragging pasted image ===
         if isDraggingPastedImage, let offset = pasteDragOffset {
             pastedImageOrigin = NSPoint(x: point.x - offset.x, y: point.y - offset.y)
             needsDisplay = true
             return
         }
 
-        // Dragging selection (non-resize move)
+        // === Dragging selection (move, single checkpoint already saved) ===
         if isDraggingSelection,
            let startPoint = selectionDragStartPoint,
            let imageOrigin = selectionImageStartOrigin,
@@ -705,7 +703,6 @@ class CanvasView: NSView {
             let dy = point.y - startPoint.y
             let newOrigin = NSPoint(x: imageOrigin.x + dx, y: imageOrigin.y + dy)
 
-            // Update origin of selection image and rectangle
             selectedImageOrigin = newOrigin
             selectionRect = NSRect(origin: newOrigin, size: selectedImage.size)
 
@@ -713,7 +710,7 @@ class CanvasView: NSView {
             return
         }
 
-        // Tool actions
+        // === Tool actions ===
         switch currentTool {
         case .select:
             if !isPastingImage {
@@ -739,10 +736,9 @@ class CanvasView: NSView {
             currentPath?.move(to: point)
 
         case .eraser:
-            // Eraser: perform same drawing but without adding new undo checkpoints mid-stroke
             currentPath?.line(to: point)
-            // We still use drawCurrentPathToCanvas (no undo checkpoint inside)
             drawCurrentPathToCanvas()
+            eraseDot(at: point)
             currentPath = NSBezierPath()
             currentPath?.move(to: point)
 
