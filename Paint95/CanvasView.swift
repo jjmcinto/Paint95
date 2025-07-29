@@ -443,10 +443,11 @@ class CanvasView: NSView {
         }
         let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
 
-        // Selection handle detection
+        // === Selection handle detection (resize) ===
         if let rect = selectionRect ?? (selectedImage != nil ? NSRect(origin: selectedImageOrigin ?? .zero, size: selectedImage!.size) : nil) {
             for (i, handle) in selectionHandlePositions(rect: rect).enumerated() {
                 if handle.contains(point) {
+                    saveUndoState()  // <-- checkpoint before selection resize
                     activeResizeHandle = ResizeHandle(rawValue: i)
                     isResizingSelection = true
                     resizeStartPoint = point
@@ -457,10 +458,11 @@ class CanvasView: NSView {
             }
         }
 
-        // Canvas handle detection
+        // === Canvas handle detection ===
         for (i, pos) in handlePositions.enumerated() {
             let handleRect = NSRect(x: pos.x, y: pos.y, width: handleSize, height: handleSize)
             if handleRect.contains(point) {
+                saveUndoState()  // <-- checkpoint before canvas resize
                 activeResizeHandle = ResizeHandle(rawValue: i)
                 isResizingCanvas = true
                 dragStartPoint = point
@@ -469,7 +471,7 @@ class CanvasView: NSView {
             }
         }
 
-        // Paste drag detection
+        // === Paste drag detection ===
         if isPastingImage, let image = pastedImage, let origin = pastedImageOrigin {
             let pasteRect = NSRect(origin: origin, size: image.size)
             if pasteRect.contains(point) {
@@ -485,7 +487,7 @@ class CanvasView: NSView {
             }
         }
 
-        // Selection outside click
+        // === Selection outside click ===
         if let image = selectedImage, let io = selectedImageOrigin {
             let selectionFrame = NSRect(origin: io, size: image.size)
             if !selectionFrame.contains(point) {
@@ -501,6 +503,7 @@ class CanvasView: NSView {
             if let image = selectedImage, let io = selectedImageOrigin {
                 let rect = NSRect(origin: io, size: image.size)
                 if rect.contains(point) {
+                    saveUndoState()  // <-- checkpoint before selection move
                     isDraggingSelection = true
                     selectionDragStartPoint = point
                     selectionImageStartOrigin = selectedImageOrigin
@@ -529,8 +532,7 @@ class CanvasView: NSView {
             }
 
         case .pencil, .brush, .eraser:
-            // Make one undo checkpoint for the entire stroke
-            saveUndoState()
+            saveUndoState()  // <-- checkpoint at stroke start
             startPoint = point
             currentPath = NSBezierPath()
             currentPath?.move(to: point)
@@ -542,7 +544,7 @@ class CanvasView: NSView {
         case .curve:
             switch curvePhase {
             case 0:
-                saveUndoState() // Only one checkpoint at curve start
+                saveUndoState()  // <-- checkpoint at start of curve
                 curveStart = point
                 curveEnd = point
             default:
@@ -550,7 +552,7 @@ class CanvasView: NSView {
             }
 
         case .line, .rect, .roundRect, .ellipse:
-            saveUndoState()
+            saveUndoState()  // <-- checkpoint at start of shape
             startPoint = point
             endPoint = point
             isDrawingShape = true
@@ -572,7 +574,7 @@ class CanvasView: NSView {
         window?.invalidateCursorRects(for: self)
     }
 
-
+    
     override func mouseDragged(with event: NSEvent) {
         let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
 
