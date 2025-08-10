@@ -30,6 +30,9 @@ class CanvasView: NSView {
 
     var drawnPaths: [(path: NSBezierPath, color: NSColor)] = []
     var colorFromSelectionWindow: Bool = false
+    
+    // Size selection
+    var toolSize: CGFloat = 1.0
 
     // For curve tool phases
     var curvePhase = 0
@@ -351,7 +354,7 @@ class CanvasView: NSView {
             }
 
             let path = NSBezierPath()
-            path.lineWidth = 2
+            path.lineWidth = toolSize
             currentColor.set()
 
             switch curvePhase {
@@ -389,7 +392,7 @@ class CanvasView: NSView {
             }
 
             if let shapePath = shapePathBetween(start, end) {
-                shapePath.lineWidth = 2
+                shapePath.lineWidth = toolSize
                 shapePath.stroke()
             }
         }
@@ -940,7 +943,7 @@ class CanvasView: NSView {
                 let path = NSBezierPath()
                 path.move(to: curveStart)
                 path.curve(to: curveEnd, controlPoint1: control1, controlPoint2: control2)
-                path.lineWidth = 2
+                path.lineWidth = toolSize
                 let translatedPath = path.copy() as! NSBezierPath
                 let transform = AffineTransform(translationByX: -canvasRect.origin.x, byY: -canvasRect.origin.y)
                 translatedPath.transform(using: transform)
@@ -1307,7 +1310,7 @@ class CanvasView: NSView {
         saveUndoState()
 
         let path = shapePathBetween(startPoint, endPoint)
-        path?.lineWidth = 2
+        path?.lineWidth = toolSize
 
         let transformedPath = path?.copy() as! NSBezierPath
         let transform = AffineTransform(translationByX: -canvasRect.origin.x, byY: -canvasRect.origin.y)
@@ -1386,10 +1389,10 @@ class CanvasView: NSView {
             lineWidth = 1
         case .brush:
             strokeColor = currentColor
-            lineWidth = 5
+            lineWidth = toolSize
         case .eraser:
             strokeColor = .white
-            lineWidth = 15
+            lineWidth = toolSize * 3
         default:
             return
         }

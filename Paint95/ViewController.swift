@@ -1,13 +1,20 @@
 // ViewController.swift
 import Cocoa  // ✅ Import AppKit for NSViewController, NSColor, etc.
 
-class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, CanvasViewDelegate {
+class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, CanvasViewDelegate, ToolSizeSelectorDelegate {
 
     @IBOutlet weak var canvasView: CanvasView!
     @IBOutlet weak var toolbarView: ToolbarView!
     @IBOutlet weak var colorPaletteView: ColorPaletteView!
     @IBOutlet weak var colorSwatchView: ColorSwatchView!
-
+    
+    var toolSizeButtons: [NSButton] = []
+    var colorPickerWindow: ColorSelectionWindowController?
+    
+    deinit {
+        print("ViewController deinitialized")
+    }
+    
     override func viewDidLoad() {
         super.viewDidLoad()
         NotificationCenter.default.addObserver(self, selector: #selector(updateColorSwatch(_:)), name: .colorPicked, object: nil)
@@ -15,6 +22,11 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
         toolbarView.delegate = self
         colorPaletteView.delegate = self
         canvasView.delegate = self
+        
+        // Assuming ToolSizeSelectorView is a subview in your ViewController
+        let toolSizeSelectorView = ToolSizeSelectorView(frame: CGRect(x: 448, y: 4, width: 452, height: 50))
+        toolSizeSelectorView.delegate = self  // Set the delegate to self (ViewController)
+        self.view.addSubview(toolSizeSelectorView)
         
         colorSwatchView.color = canvasView.currentColor
         //self?.presentColorSelection(currentColor: self!.colorSwatchView.color)
@@ -25,11 +37,14 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
            guard let self = self else { return event }
            return self.handleGlobalKeyDown(event)
-       }
+        }
     }
     
-    var colorPickerWindow: ColorSelectionWindowController?
+    override func viewDidAppear() {
+        super.viewDidAppear()
+    }
 
+    
     func presentColorSelection() {
         let initialRGB: [Double]
         
@@ -94,7 +109,11 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
     func toolSelected(_ tool: PaintTool) {
         canvasView.currentTool = tool
     }
-
+    
+    func toolSizeSelected(_ size: CGFloat) {
+        canvasView.toolSize = size
+    }
+    
     // MARK: - ColorPaletteDelegate
     func colorSelected(_ color: NSColor) {
         canvasView.currentColor = color
