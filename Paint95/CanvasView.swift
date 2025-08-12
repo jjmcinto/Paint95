@@ -405,16 +405,6 @@ class CanvasView: NSView {
             path.stroke()
         }
 
-        if isPastingImage, let image = pastedImage, let origin = pastedImageOrigin {
-            image.draw(at: origin, from: .zero, operation: .sourceOver, fraction: 1.0)
-            NSColor.keyboardFocusIndicatorColor.setStroke()
-            let dash: [CGFloat] = [5, 3]
-            let selectionPath = NSBezierPath(rect: NSRect(origin: origin, size: image.size))
-            selectionPath.setLineDash(dash, count: dash.count, phase: 0)
-            selectionPath.lineWidth = 1
-            selectionPath.stroke()
-        }
-
         NSColor.black.setStroke()
         NSBezierPath(rect: canvasRect).stroke()
 
@@ -464,23 +454,7 @@ class CanvasView: NSView {
                 return
             }
         }
-
-        // === Paste drag detection ===
-        if isPastingImage, let image = pastedImage, let origin = pastedImageOrigin {
-            let pasteRect = NSRect(origin: origin, size: image.size)
-            if pasteRect.contains(point) {
-                self.window?.makeFirstResponder(self)
-                pasteDragStartPoint = point
-                pasteImageStartOrigin = origin
-                pasteDragOffset = NSPoint(x: point.x - origin.x, y: point.y - origin.y)
-                isDraggingPastedImage = true
-                return
-            } else {
-                commitPastedImage()
-                return
-            }
-        }
-
+        
         // === Selection outside click ===
         if let image = selectedImage, let io = selectedImageOrigin {
             let selectionFrame = NSRect(origin: io, size: image.size)
@@ -501,7 +475,9 @@ class CanvasView: NSView {
                     isDraggingSelection = true
                     selectionDragStartPoint = point
                     selectionImageStartOrigin = selectedImageOrigin
-                    clearCanvasRegion(rect: rect)
+                    if !isPastingImage { // do NOT clear during uncommitted paste move
+                        clearCanvasRegion(rect: rect)
+                    }
                 }
             } else if !isPastingImage {
                 startPoint = point
@@ -571,8 +547,8 @@ class CanvasView: NSView {
     override func mouseDragged(with event: NSEvent) {
         let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
         let shiftPressed = event.modifierFlags.contains(.shift)
-
-        // === Selection resizing (live destructive) ===
+        
+        // === Selection resizing (reuse for pasted content; non-destructive while pasting) ===
         if isResizingSelection, let handle = activeResizeHandle {
             let dx = point.x - resizeStartPoint.x
             let dy = point.y - resizeStartPoint.y
@@ -607,7 +583,6 @@ class CanvasView: NSView {
                 newRect.size.height -= dy
             }
 
-            // === Shift for maintaining aspect ratio ===
             if shiftPressed {
                 let aspect = originalSelectionRect.width / max(originalSelectionRect.height, 1)
                 if handle == .topLeft || handle == .topRight || handle == .bottomLeft || handle == .bottomRight {
@@ -621,29 +596,18 @@ class CanvasView: NSView {
                 }
             }
 
-            // Clear original content immediately
-            initializeCanvasIfNeeded()
-            canvasImage?.lockFocus()
-            NSColor.white.set()
-            NSBezierPath(rect: originalSelectionRect).fill()
-            canvasImage?.unlockFocus()
-
-            // Draw scaled image at new size/location
+            // ⚠️ Non-destructive while pasting: just update the preview buffers
             if let image = originalSelectedImage {
-                let scaledImage = NSImage(size: newRect.size)
-                scaledImage.lockFocus()
+                // Create a scaled copy for the preview
+                let scaled = NSImage(size: newRect.size)
+                scaled.lockFocus()
                 image.draw(in: NSRect(origin: .zero, size: newRect.size),
                            from: NSRect(origin: .zero, size: image.size),
                            operation: .copy,
                            fraction: 1.0)
-                scaledImage.unlockFocus()
+                scaled.unlockFocus()
 
-                canvasImage?.lockFocus()
-                scaledImage.draw(in: newRect)
-                canvasImage?.unlockFocus()
-
-                // Update selection for preview
-                selectedImage = scaledImage
+                selectedImage = scaled
                 selectedImageOrigin = newRect.origin
                 selectionRect = newRect
             }
@@ -651,6 +615,7 @@ class CanvasView: NSView {
             needsDisplay = true
             return
         }
+
 
         // === Canvas resize ===
         if isResizingCanvas, let handle = activeResizeHandle {
@@ -695,14 +660,7 @@ class CanvasView: NSView {
             needsDisplay = true
             return
         }
-
-        // === Dragging pasted image ===
-        if isDraggingPastedImage, let offset = pasteDragOffset {
-            pastedImageOrigin = NSPoint(x: point.x - offset.x, y: point.y - offset.y)
-            needsDisplay = true
-            return
-        }
-
+        
         // === Dragging selection ===
         if isDraggingSelection,
            let startPoint = selectionDragStartPoint,
@@ -781,6 +739,7 @@ class CanvasView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        
         if isResizingCanvas {
             isResizingCanvas = false
             activeResizeHandle = nil
@@ -808,19 +767,6 @@ class CanvasView: NSView {
             return
         }
 
-        if isPastingImage, let pasted = pastedImage, let origin = pastedImageOrigin {
-            initializeCanvasIfNeeded()
-            canvasImage?.lockFocus()
-            pasted.draw(at: origin, from: .zero, operation: .sourceOver, fraction: 1.0)
-            canvasImage?.unlockFocus()
-
-            pastedImage = nil
-            pastedImageOrigin = nil
-            isPastingImage = false
-            needsDisplay = true
-            return
-        }
-
         let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
         let shiftPressed = event.modifierFlags.contains(.shift)
 
@@ -837,6 +783,20 @@ class CanvasView: NSView {
             return
         }
 
+        // === Commit pasted content only if mouse up outside the selection frame ===
+        if isPastingImage, let image = selectedImage, let io = selectedImageOrigin {
+            let frame = NSRect(origin: io, size: image.size)
+            let upPoint = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
+            if !frame.contains(upPoint) {
+                // Reuse selection commit for paste, then exit paste mode
+                commitSelection()
+                isPastingImage = false
+                isPastingActive = false
+                needsDisplay = true
+                return
+            }
+            // If mouse up inside, keep editing (no commit)
+        }
         endPoint = point
 
         switch currentTool {
@@ -1078,8 +1038,10 @@ class CanvasView: NSView {
     func pasteImage() {
         let pasteboard = NSPasteboard.general
 
-        // Step 1: If an image is already being pasted, commit it
+        // If something is already being pasted, commit it first
         if isPastingImage {
+            // If you've updated commitPastedImage() to delegate to commitSelection(), prefer that.
+            // Otherwise this still works with your current implementation.
             commitPastedImage()
             isPastingImage = false
             pastedImage = nil
@@ -1087,19 +1049,26 @@ class CanvasView: NSView {
         }
         
         if let images = pasteboard.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage],
-           let image = images.first {
+           let img = images.first {
 
-            // ✅ Clear old selection rectangle (from copy)
+            // Clear any old selection state
             selectionRect = nil
             selectedImage = nil
             selectedImageOrigin = nil
 
-            // ✅ Start Paste Mode
-            pastedImage = image
-            pastedImageOrigin = NSPoint(x: 100, y: 100)
+            // Start Paste Mode (pasted overlay)
+            pastedImage = img
+            let origin = NSPoint(x: 100, y: 100)
+            pastedImageOrigin = origin
             isPastingImage = true
             isPastingActive = true
             hasMovedSelection = false
+
+            // Make the pasted content the active "selection" so existing selection
+            // move/resize code & blue handles are reused
+            selectedImage = img
+            selectedImageOrigin = origin
+            selectionRect = NSRect(origin: origin, size: img.size)
 
             self.window?.makeFirstResponder(self)
             needsDisplay = true
@@ -1144,14 +1113,11 @@ class CanvasView: NSView {
     }
 
     func commitPastedImage() {
-        saveUndoState()
-        guard let image = pastedImage, let origin = pastedImageOrigin else { return }
-        initializeCanvasIfNeeded()
-        canvasImage?.lockFocus()
-        image.draw(at: origin, from: .zero, operation: .sourceOver, fraction: 1.0)
-        canvasImage?.unlockFocus()
-
-        // ✅ Clear all paste-related state
+        // If we unified paste → selection, just reuse selection commit
+        if selectedImage != nil, selectedImageOrigin != nil {
+            commitSelection()
+        }
+        // Clear paste flags regardless
         pastedImage = nil
         pastedImageOrigin = nil
         pasteDragOffset = nil
@@ -1160,12 +1126,6 @@ class CanvasView: NSView {
         isPastingImage = false
         isPastingActive = false
         isDraggingPastedImage = false
-
-        // ✅ Also clear selection-related state so user can make a new selection
-        selectionRect = nil
-        selectedImage = nil
-
-        // ✅ Trigger canvas redraw
         needsDisplay = true
     }
     
@@ -1422,13 +1382,13 @@ class CanvasView: NSView {
         }
         
         // Selection resize handles (if selection or pasted image exists)
-        if let selectionFrame = (isPastingImage
-            ? (pastedImageOrigin != nil && pastedImage != nil ? NSRect(origin: pastedImageOrigin!, size: pastedImage!.size) : nil)
-            : (selectedImage != nil ? NSRect(origin: selectedImageOrigin ?? .zero, size: selectedImage!.size) : selectionRect)) {
-            
+        if let selectionFrame = (selectedImage != nil
+            ? NSRect(origin: selectedImageOrigin ?? .zero, size: selectedImage!.size)
+            : selectionRect) {
+
             let selectionHandles = selectionHandlePositions(rect: selectionFrame)
             for (i, handleRect) in selectionHandles.enumerated() {
-                let cursor = cursorForHandle(index: i) // reuse same arrow logic
+                let cursor = cursorForHandle(index: i)
                 addCursorRect(handleRect, cursor: cursor)
             }
         }
