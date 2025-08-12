@@ -455,6 +455,23 @@ class CanvasView: NSView {
             }
         }
         
+        // If we are in paste mode and the click is outside the active selection, commit the paste
+        if isPastingImage,
+           let img = selectedImage, let io = selectedImageOrigin {
+            let activeRect = NSRect(origin: io, size: img.size)
+            if !activeRect.contains(point) {
+                // Reuse the selection commit to draw the overlay into the canvas
+                commitSelection()
+                // Clear paste-mode flags
+                isPastingImage = false
+                isPastingActive = false
+                pastedImage = nil
+                pastedImageOrigin = nil
+                // Do NOT return; allow this same click to proceed (e.g., start a new selection)
+            }
+        }
+        
+        /*
         // === Selection outside click ===
         if let image = selectedImage, let io = selectedImageOrigin {
             let selectionFrame = NSRect(origin: io, size: image.size)
@@ -463,6 +480,7 @@ class CanvasView: NSView {
                 return
             }
         }
+        */
 
         initializeCanvasIfNeeded()
 
@@ -1040,8 +1058,6 @@ class CanvasView: NSView {
 
         // If something is already being pasted, commit it first
         if isPastingImage {
-            // If you've updated commitPastedImage() to delegate to commitSelection(), prefer that.
-            // Otherwise this still works with your current implementation.
             commitPastedImage()
             isPastingImage = false
             pastedImage = nil
@@ -1056,7 +1072,7 @@ class CanvasView: NSView {
             selectedImage = nil
             selectedImageOrigin = nil
 
-            // Start Paste Mode (pasted overlay)
+            // Start Paste Mode (overlay)
             pastedImage = img
             let origin = NSPoint(x: 100, y: 100)
             pastedImageOrigin = origin
@@ -1064,11 +1080,14 @@ class CanvasView: NSView {
             isPastingActive = true
             hasMovedSelection = false
 
-            // Make the pasted content the active "selection" so existing selection
-            // move/resize code & blue handles are reused
+            // Make the pasted content the active "selection"
             selectedImage = img
             selectedImageOrigin = origin
             selectionRect = NSRect(origin: origin, size: img.size)
+
+            // Ensure the selection tool is active so move/resize works
+            currentTool = .select
+            NotificationCenter.default.post(name: .toolChanged, object: PaintTool.select)
 
             self.window?.makeFirstResponder(self)
             needsDisplay = true
