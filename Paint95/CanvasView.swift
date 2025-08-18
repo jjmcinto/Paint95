@@ -18,9 +18,17 @@ extension Notification.Name {
 class CanvasView: NSView {
     
     weak var delegate: CanvasViewDelegate?
-
+    private var colorWindowController: ColorSelectionWindowController?
+    
     var currentTool: PaintTool = .pencil
-    var currentColor: NSColor = .black
+    var currentColor: NSColor {
+        get { primaryColor }
+        set { primaryColor = newValue }
+    } // = .black
+    var primaryColor: NSColor = .black
+    var secondaryColor: NSColor = .white
+    enum ActiveColorSlot { case primary, secondary }
+    var activeColorSlot: ActiveColorSlot = .primary
 
     var canvasImage: NSImage? = nil
     var currentPath: NSBezierPath?
@@ -120,9 +128,16 @@ class CanvasView: NSView {
     private let maxUndoSteps = 5
     private var cancelCurvePreview = false
     
+    func setActiveColor(_ color: NSColor, for slot: ActiveColorSlot) {
+        switch slot {
+        case .primary: primaryColor = color
+        case .secondary: secondaryColor = color
+        }
+        needsDisplay = true
+    }
+    
     func saveCanvasToDefaultLocation() {
         guard let canvasImage = canvasImage else {
-            print("No canvas image to save.")
             return
         }
 
@@ -134,14 +149,12 @@ class CanvasView: NSView {
         guard let tiffData = canvasImage.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiffData),
               let jpegData = bitmap.representation(using: .jpeg, properties: [:]) else {
-            print("Failed to generate JPEG data.")
             return
         }
 
         do {
             try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
             try jpegData.write(to: path)
-            print("Canvas saved to \(path.path)")
         } catch {
             print("Save failed: \(error)")
         }
@@ -176,8 +189,8 @@ class CanvasView: NSView {
 
     @objc func colorPicked(_ notification: Notification) {
         if let newColor = notification.object as? NSColor {
-            currentColor = newColor
-            colorFromSelectionWindow = true // Track source
+            setActiveColor(newColor, for: activeColorSlot)
+            colorFromSelectionWindow = true
             needsDisplay = true
         }
     }
@@ -198,26 +211,52 @@ class CanvasView: NSView {
     }
     
     func showColorSelectionWindow() {
-        var rgbColor: [Double] = [0,0,0]
-        
-        if colorFromSelectionWindow {
-            rgbColor = AppColorState.shared.rgb
-        } else {
-            // Approximate RGB from NSColor
-            if let rgbColor = currentColor.usingColorSpace(.deviceRGB) {
-                SharedColor.rgb = [
-                    Double(rgbColor.redComponent * 255.0),
-                    Double(rgbColor.greenComponent * 255.0),
-                    Double(rgbColor.blueComponent * 255.0)
-                ]
+        // 1) Start from the ACTIVE swatch (primary or secondary)
+        let baseColor: NSColor = (activeColorSlot == .primary) ? primaryColor : secondaryColor
+        let rgb = baseColor.usingColorSpace(.deviceRGB) ?? baseColor
+        let initial: [Double] = [
+            Double(rgb.redComponent * 255.0),
+            Double(rgb.greenComponent * 255.0),
+            Double(rgb.blueComponent * 255.0)
+        ]
+
+        // 2) Build controller
+        let controller = ColorSelectionWindowController(
+            initialRGB: initial,
+            onColorSelected: { [weak self] newColor in
+                guard let self = self else { return }
+
+                // Update the correct swatch that is active
+                self.setActiveColor(newColor, for: self.activeColorSlot)
+
+                // Broadcast for preview/live UI that are already listening
+                NotificationCenter.default.post(name: .colorPicked, object: newColor)
+
+                // Also broadcast a "commit" with explicit RGB so any owner of initialR/G/B syncs
+                if let dev = newColor.usingColorSpace(.deviceRGB) {
+                    let r = Int(round(dev.redComponent   * 255.0))
+                    let g = Int(round(dev.greenComponent * 255.0))
+                    let b = Int(round(dev.blueComponent  * 255.0))
+                    NotificationCenter.default.post(
+                        name: .colorCommitted,
+                        object: nil,
+                        userInfo: ["r": r, "g": g, "b": b]
+                    )
+                }
+
+                // Release window controller
+                self.colorWindowController = nil
+            },
+            onCancel: { [weak self] in
+                self?.colorWindowController = nil
             }
-        }
-        
-        let controller = ColorSelectionWindowController(initialRGB: rgbColor, onColorSelected: { [weak self] newColor in
-            self?.currentColor = newColor
-            NotificationCenter.default.post(name: .colorPicked, object: newColor)
-        })
+        )
+
+        // 3) Present
+        colorWindowController = controller
         controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
     
     func setCurrentColor(_ color: NSColor) {
@@ -1792,5 +1831,7 @@ class CanvasView: NSView {
             needsDisplay = true
         }
     }
-
+    deinit {
+        NotificationCenter.default.removeObserver(self, name: .colorPicked, object: nil)
+    }
 }

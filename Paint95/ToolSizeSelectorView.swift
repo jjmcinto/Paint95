@@ -20,7 +20,6 @@ class ToolSizeSelectorView: NSView {
     
     override func removeFromSuperview() {
         super.removeFromSuperview()
-        print("ToolSizeSelectorView removed from superview")
     }
     
     override init(frame frameRect: NSRect) {
@@ -74,17 +73,6 @@ class ToolSizeSelectorView: NSView {
             
             delegate?.toolSizeSelected(selectedSize)
             
-            /*
-            // Directly access the ViewController's method to handle the tool size change
-            if let controller = self.window?.windowController as? ViewController {
-                print("Directly calling toolSizeSelected: \(selectedSize)")
-                controller.toolSizeSelected(selectedSize)  // Directly invoke method in ViewController
-            }
-            else {
-                print("controller not defined!")
-            }
-            */
-
             setNeedsDisplay(bounds)
         }
     }

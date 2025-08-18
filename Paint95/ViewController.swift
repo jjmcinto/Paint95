@@ -10,6 +10,7 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
     
     var toolSizeButtons: [NSButton] = []
     var colorPickerWindow: ColorSelectionWindowController?
+    private var colorWindowController: ColorSelectionWindowController?
     
     deinit {
         print("ViewController deinitialized")
@@ -62,11 +63,22 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
             ]
         }
 
-        let colorWindow = ColorSelectionWindowController(initialRGB: initialRGB) { newColor in
-            NotificationCenter.default.post(name: .colorPicked, object: newColor)
-        }
+        let controller = ColorSelectionWindowController(
+                    initialRGB: initialRGB,
+                    onColorSelected: { [weak self] newColor in
+                        // Broadcast and clean up
+                        NotificationCenter.default.post(name: .colorPicked, object: newColor)
+                        self?.colorWindowController = nil
+                    },
+                    onCancel: { [weak self] in
+                        // Just release when the user cancels/closes
+                        self?.colorWindowController = nil
+                    }
+                )
 
-        colorWindow.showWindow(nil)
+        colorWindowController = controller
+                controller.showWindow(self.view.window)          // present
+                controller.window?.makeKeyAndOrderFront(nil)     // ensure frontmost
     }
     
     func handleGlobalKeyDown(_ event: NSEvent) -> NSEvent? {
