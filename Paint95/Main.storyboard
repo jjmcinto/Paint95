@@ -21,11 +21,11 @@
                                 <rect key="frame" x="0.0" y="54" width="100" height="280"/>
                                 <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
                             </customView>
-                            <customView fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="Quk-ip-mAh" customClass="ColorPaletteView" customModule="Paint95" customModuleProvider="target">
+                            <customView fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="Quk-ip-mAh" customClass="ColourPaletteView" customModule="Paint95" customModuleProvider="target">
                                 <rect key="frame" x="100" y="4" width="350" height="50"/>
                                 <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
                             </customView>
-                            <customView fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="SuH-U2-c1K" customClass="ColorSwatchView" customModule="Paint95" customModuleProvider="target">
+                            <customView fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="SuH-U2-c1K" customClass="ColourSwatchView" customModule="Paint95" customModuleProvider="target">
                                 <rect key="frame" x="0.0" y="0.0" width="101" height="54"/>
                                 <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
                             </customView>
@@ -33,8 +33,8 @@
                     </view>
                     <connections>
                         <outlet property="canvasView" destination="hjZ-ja-Tvy" id="5vw-Rn-Q7s"/>
-                        <outlet property="colorPaletteView" destination="Quk-ip-mAh" id="I5l-6N-bIt"/>
-                        <outlet property="colorSwatchView" destination="SuH-U2-c1K" id="mDt-c9-hbN"/>
+                        <outlet property="colourPaletteView" destination="Quk-ip-mAh" id="wH6-qr-Jaw"/>
+                        <outlet property="colourSwatchView" destination="SuH-U2-c1K" id="Joj-g3-aOG"/>
                         <outlet property="toolbarView" destination="Ttc-D5-FGE" id="5gt-uo-YJV"/>
                     </connections>
                 </viewController>

@@ -1,22 +1,22 @@
-// ColorPaletteView.swift
+// ColourPaletteView.swift
 import Cocoa
 
-protocol ColorPaletteDelegate: AnyObject {
-    func colorSelected(_ color: NSColor)
+protocol ColourPaletteDelegate: AnyObject {
+    func colourSelected(_ colour: NSColor)
 }
 
 
 
-class ColorPaletteView: NSView {
-    weak var delegate: ColorPaletteDelegate?
+class ColourPaletteView: NSView {
+    weak var delegate: ColourPaletteDelegate?
 
-    var selectedColor: NSColor = .black {
+    var selectedColour: NSColor = .black {
         didSet {
             needsDisplay = true
         }
     }
     
-    let colors: [NSColor] = [
+    let colours: [NSColor] = [
         .black, .darkGray, .gray, .white,
         .red, .green, .blue, .cyan,
         .yellow, .magenta, .orange, .brown,
@@ -27,12 +27,12 @@ class ColorPaletteView: NSView {
         super.draw(dirtyRect)
 
         let squareSize = NSSize(width: 20, height: 20)
-        for (index, color) in colors.enumerated() {
+        for (index, colour) in colours.enumerated() {
             let x = CGFloat(index % 8) * (squareSize.width + 2)
             let y = CGFloat(index / 8) * (squareSize.height + 2)
             let rect = NSRect(origin: CGPoint(x: x, y: y), size: squareSize)
 
-            color.setFill()
+            colour.setFill()
             rect.fill()
 
             NSColor.black.setStroke()
@@ -45,8 +45,8 @@ class ColorPaletteView: NSView {
         let col = Int(point.x / 22)
         let row = Int(point.y / 22)
         let index = row * 8 + col
-        if colors.indices.contains(index) {
-            delegate?.colorSelected(colors[index])
+        if colours.indices.contains(index) {
+            delegate?.colourSelected(colours[index])
         }
     }
 }

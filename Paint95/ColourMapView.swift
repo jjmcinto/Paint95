@@ -1,12 +1,12 @@
-// ColorMapView.swift
+// ColourMapView.swift
 import AppKit
 
-protocol ColorMapViewDelegate: AnyObject {
-    func colorMapView(_ view: ColorMapView, didPick color: NSColor)
+protocol ColourMapViewDelegate: AnyObject {
+    func colourMapView(_ view: ColourMapView, didPick colour: NSColor)
 }
 
-final class ColorMapView: NSView {
-    weak var delegate: ColorMapViewDelegate?
+final class ColourMapView: NSView {
+    weak var delegate: ColourMapViewDelegate?
 
     private var image: NSImage? {
         didSet { needsDisplay = true }
@@ -30,7 +30,7 @@ final class ColorMapView: NSView {
         layer?.cornerRadius = 6
         layer?.masksToBounds = true
 
-        image = ColorMapProvider.loadImage()
+        image = ColourMapProvider.loadImage()
 
         // Track in visible rect so we don't need to update when bounds change
         let ta = NSTrackingArea(
@@ -44,7 +44,7 @@ final class ColorMapView: NSView {
 
     override var intrinsicContentSize: NSSize {
         if let img = image { return img.size }
-        return ColorMapProvider.mapSize
+        return ColourMapProvider.mapSize
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -70,8 +70,8 @@ final class ColorMapView: NSView {
         guard let img = image else { return }
         let local = convert(event.locationInWindow, from: nil)
         let pixelPoint = mapToImagePixel(localPoint: local, image: img)
-        guard let picked = ColorMapProvider.color(at: pixelPoint, in: img) else { return }
-        delegate?.colorMapView(self, didPick: picked)
+        guard let picked = ColourMapProvider.colour(at: pixelPoint, in: img) else { return }
+        delegate?.colourMapView(self, didPick: picked)
     }
 
     private func mapToImagePixel(localPoint: NSPoint, image: NSImage) -> NSPoint {

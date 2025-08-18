@@ -1,16 +1,16 @@
 // ViewController.swift
 import Cocoa  // ✅ Import AppKit for NSViewController, NSColor, etc.
 
-class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, CanvasViewDelegate, ToolSizeSelectorDelegate {
+class ViewController: NSViewController, ToolbarDelegate, ColourPaletteDelegate, CanvasViewDelegate, ToolSizeSelectorDelegate {
 
     @IBOutlet weak var canvasView: CanvasView!
     @IBOutlet weak var toolbarView: ToolbarView!
-    @IBOutlet weak var colorPaletteView: ColorPaletteView!
-    @IBOutlet weak var colorSwatchView: ColorSwatchView!
+    @IBOutlet weak var colourPaletteView: ColourPaletteView!
+    @IBOutlet weak var colourSwatchView: ColourSwatchView!
     
     var toolSizeButtons: [NSButton] = []
-    var colorPickerWindow: ColorSelectionWindowController?
-    private var colorWindowController: ColorSelectionWindowController?
+    var colourPickerWindow: ColourSelectionWindowController?
+    private var colourWindowController: ColourSelectionWindowController?
     
     deinit {
         print("ViewController deinitialized")
@@ -18,10 +18,10 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
     
     override func viewDidLoad() {
         super.viewDidLoad()
-        NotificationCenter.default.addObserver(self, selector: #selector(updateColorSwatch(_:)), name: .colorPicked, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(updateColourSwatch(_:)), name: .colourPicked, object: nil)
         
         toolbarView.delegate = self
-        colorPaletteView.delegate = self
+        colourPaletteView.delegate = self
         canvasView.delegate = self
         
         // Assuming ToolSizeSelectorView is a subview in your ViewController
@@ -29,10 +29,9 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
         toolSizeSelectorView.delegate = self  // Set the delegate to self (ViewController)
         self.view.addSubview(toolSizeSelectorView)
         
-        colorSwatchView.color = canvasView.currentColor
-        //self?.presentColorSelection(currentColor: self!.colorSwatchView.color)
-        colorSwatchView.onClick = { [weak self] in
-            self?.presentColorSelection()
+        colourSwatchView.colour = canvasView.currentColour
+        colourSwatchView.onClick = { [weak self] in
+            self?.presentColourSelection()
         }
         
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -46,37 +45,37 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
     }
 
     
-    func presentColorSelection() {
+    func presentColourSelection() {
         let initialRGB: [Double]
         
-        if canvasView.colorFromSelectionWindow {
-            initialRGB = AppColorState.shared.rgb
+        if canvasView.colourFromSelectionWindow {
+            initialRGB = AppColourState.shared.rgb
         } else {
-            guard let rgbColor = canvasView.currentColor.usingColorSpace(.deviceRGB) else {
-                print("Failed to convert color to deviceRGB")
+            guard let rgbColour = canvasView.currentColour.usingColorSpace(.deviceRGB) else {
+                print("Failed to convert colour to deviceRGB")
                 return
             }
             initialRGB = [
-                Double(rgbColor.redComponent * 255.0),
-                Double(rgbColor.greenComponent * 255.0),
-                Double(rgbColor.blueComponent * 255.0)
+                Double(rgbColour.redComponent * 255.0),
+                Double(rgbColour.greenComponent * 255.0),
+                Double(rgbColour.blueComponent * 255.0)
             ]
         }
 
-        let controller = ColorSelectionWindowController(
+        let controller = ColourSelectionWindowController(
                     initialRGB: initialRGB,
-                    onColorSelected: { [weak self] newColor in
+                    onColourSelected: { [weak self] newColour in
                         // Broadcast and clean up
-                        NotificationCenter.default.post(name: .colorPicked, object: newColor)
-                        self?.colorWindowController = nil
+                        NotificationCenter.default.post(name: .colourPicked, object: newColour)
+                        self?.colourWindowController = nil
                     },
                     onCancel: { [weak self] in
                         // Just release when the user cancels/closes
-                        self?.colorWindowController = nil
+                        self?.colourWindowController = nil
                     }
                 )
 
-        colorWindowController = controller
+        colourWindowController = controller
                 controller.showWindow(self.view.window)          // present
                 controller.window?.makeKeyAndOrderFront(nil)     // ensure frontmost
     }
@@ -111,9 +110,9 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
         }
     }
 
-    @objc func updateColorSwatch(_ notification: Notification) {
-        if let color = notification.object as? NSColor {
-            colorSwatchView.color = color
+    @objc func updateColourSwatch(_ notification: Notification) {
+        if let colour = notification.object as? NSColor {
+            colourSwatchView.colour = colour
         }
     }
 
@@ -126,30 +125,30 @@ class ViewController: NSViewController, ToolbarDelegate, ColorPaletteDelegate, C
         canvasView.toolSize = size
     }
     
-    // MARK: - ColorPaletteDelegate
-    func colorSelected(_ color: NSColor) {
-        canvasView.currentColor = color
-        canvasView.colorFromSelectionWindow = false
-        guard let rgbColor = color.usingColorSpace(.deviceRGB) else {
-            print("Failed to convert color to deviceRGB")
+    // MARK: - ColourPaletteDelegate
+    func colourSelected(_ colour: NSColor) {
+        canvasView.currentColour = colour
+        canvasView.colourFromSelectionWindow = false
+        guard let rgbColour = colour.usingColorSpace(.deviceRGB) else {
+            print("Failed to convert colour to deviceRGB")
             return
         }
-        AppColorState.shared.rgb = [
-            Double(rgbColor.redComponent * 255.0),
-            Double(rgbColor.greenComponent * 255.0),
-            Double(rgbColor.blueComponent * 255.0)
+        AppColourState.shared.rgb = [
+            Double(rgbColour.redComponent * 255.0),
+            Double(rgbColour.greenComponent * 255.0),
+            Double(rgbColour.blueComponent * 255.0)
         ]
-        colorSwatchView.color = rgbColor
+        colourSwatchView.colour = rgbColour
     }
     
     // Optional: Clear button or menu action
     @IBAction func clearCanvas(_ sender: Any) {
         canvasView.clearCanvas()
     }
-    func didPickColor(_ color: NSColor) {
-        canvasView.currentColor = color
-        colorPaletteView.selectedColor = color
-        colorPaletteView.needsDisplay = true
-        colorSwatchView.color = color
+    func didPickColour(_ colour: NSColor) {
+        canvasView.currentColour = colour
+        colourPaletteView.selectedColour = colour
+        colourPaletteView.needsDisplay = true
+        colourSwatchView.colour = colour
     }
 }

@@ -1,5 +1,5 @@
 import Foundation
 extension Notification.Name {
-    static let colorPicked = Notification.Name("colorPicked")
-    static let colorCommitted = Notification.Name("ColorCommittedNotification")
+    static let colourPicked = Notification.Name("colourPicked")
+    static let colourCommitted = Notification.Name("ColourCommittedNotification")
 }

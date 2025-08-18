@@ -1,7 +1,7 @@
 import Cocoa
 
 protocol CanvasViewDelegate: AnyObject {
-    func didPickColor(_ color: NSColor)
+    func didPickColour(_ colour: NSColor)
 }
 
 extension CanvasView: NSTextViewDelegate {
@@ -18,17 +18,17 @@ extension Notification.Name {
 class CanvasView: NSView {
     
     weak var delegate: CanvasViewDelegate?
-    private var colorWindowController: ColorSelectionWindowController?
+    private var colourWindowController: ColourSelectionWindowController?
     
     var currentTool: PaintTool = .pencil
-    var currentColor: NSColor {
-        get { primaryColor }
-        set { primaryColor = newValue }
+    var currentColour: NSColor {
+        get { primaryColour }
+        set { primaryColour = newValue }
     } // = .black
-    var primaryColor: NSColor = .black
-    var secondaryColor: NSColor = .white
-    enum ActiveColorSlot { case primary, secondary }
-    var activeColorSlot: ActiveColorSlot = .primary
+    var primaryColour: NSColor = .black
+    var secondaryColour: NSColor = .white
+    enum ActiveColourSlot { case primary, secondary }
+    var activeColourSlot: ActiveColourSlot = .primary
 
     var canvasImage: NSImage? = nil
     var currentPath: NSBezierPath?
@@ -36,8 +36,8 @@ class CanvasView: NSView {
     var endPoint: NSPoint = .zero
     var isDrawingShape: Bool = false
 
-    var drawnPaths: [(path: NSBezierPath, color: NSColor)] = []
-    var colorFromSelectionWindow: Bool = false
+    var drawnPaths: [(path: NSBezierPath, colour: NSColor)] = []
+    var colourFromSelectionWindow: Bool = false
     
     // Size selection
     var toolSize: CGFloat = 1.0
@@ -128,10 +128,10 @@ class CanvasView: NSView {
     private let maxUndoSteps = 5
     private var cancelCurvePreview = false
     
-    func setActiveColor(_ color: NSColor, for slot: ActiveColorSlot) {
+    func setActiveColour(_ colour: NSColor, for slot: ActiveColourSlot) {
         switch slot {
-        case .primary: primaryColor = color
-        case .secondary: secondaryColor = color
+        case .primary: primaryColour = colour
+        case .secondary: secondaryColour = colour
         }
         needsDisplay = true
     }
@@ -160,26 +160,26 @@ class CanvasView: NSView {
         }
     }
     
-    func colorSelectedFromPalette(_ color: NSColor) {
-        SharedColor.currentColor = color
-        SharedColor.source = .palette
+    func colourSelectedFromPalette(_ colour: NSColor) {
+        SharedColour.currentColour = colour
+        SharedColour.source = .palette
 
         // Approximate RGB from NSColor
-        if let rgbColor = color.usingColorSpace(.deviceRGB) {
-            SharedColor.rgb = [
-                Double(rgbColor.redComponent * 255.0),
-                Double(rgbColor.greenComponent * 255.0),
-                Double(rgbColor.blueComponent * 255.0)
+        if let rgbColour = colour.usingColorSpace(.deviceRGB) {
+            SharedColour.rgb = [
+                Double(rgbColour.redComponent * 255.0),
+                Double(rgbColour.greenComponent * 255.0),
+                Double(rgbColour.blueComponent * 255.0)
             ]
         }
 
-        self.currentColor = color
+        self.currentColour = colour
         needsDisplay = true
     }
     
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        NotificationCenter.default.addObserver(self, selector: #selector(colorPicked(_:)), name: .colorPicked, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(colourPicked(_:)), name: .colourPicked, object: nil)
         let trackingArea = NSTrackingArea(rect: self.bounds,
                                           options: [.mouseMoved, .activeAlways, .inVisibleRect],
                                           owner: self,
@@ -187,10 +187,10 @@ class CanvasView: NSView {
         self.addTrackingArea(trackingArea)
     }
 
-    @objc func colorPicked(_ notification: Notification) {
-        if let newColor = notification.object as? NSColor {
-            setActiveColor(newColor, for: activeColorSlot)
-            colorFromSelectionWindow = true
+    @objc func colourPicked(_ notification: Notification) {
+        if let newColour = notification.object as? NSColor {
+            setActiveColour(newColour, for: activeColourSlot)
+            colourFromSelectionWindow = true
             needsDisplay = true
         }
     }
@@ -210,10 +210,10 @@ class CanvasView: NSView {
         }
     }
     
-    func showColorSelectionWindow() {
+    func showColourSelectionWindow() {
         // 1) Start from the ACTIVE swatch (primary or secondary)
-        let baseColor: NSColor = (activeColorSlot == .primary) ? primaryColor : secondaryColor
-        let rgb = baseColor.usingColorSpace(.deviceRGB) ?? baseColor
+        let baseColour: NSColor = (activeColourSlot == .primary) ? primaryColour : secondaryColour
+        let rgb = baseColour.usingColorSpace(.deviceRGB) ?? baseColour
         let initial: [Double] = [
             Double(rgb.redComponent * 255.0),
             Double(rgb.greenComponent * 255.0),
@@ -221,46 +221,46 @@ class CanvasView: NSView {
         ]
 
         // 2) Build controller
-        let controller = ColorSelectionWindowController(
+        let controller = ColourSelectionWindowController(
             initialRGB: initial,
-            onColorSelected: { [weak self] newColor in
+            onColourSelected: { [weak self] newColour in
                 guard let self = self else { return }
 
                 // Update the correct swatch that is active
-                self.setActiveColor(newColor, for: self.activeColorSlot)
+                self.setActiveColour(newColour, for: self.activeColourSlot)
 
                 // Broadcast for preview/live UI that are already listening
-                NotificationCenter.default.post(name: .colorPicked, object: newColor)
+                NotificationCenter.default.post(name: .colourPicked, object: newColour)
 
                 // Also broadcast a "commit" with explicit RGB so any owner of initialR/G/B syncs
-                if let dev = newColor.usingColorSpace(.deviceRGB) {
+                if let dev = newColour.usingColorSpace(.deviceRGB) {
                     let r = Int(round(dev.redComponent   * 255.0))
                     let g = Int(round(dev.greenComponent * 255.0))
                     let b = Int(round(dev.blueComponent  * 255.0))
                     NotificationCenter.default.post(
-                        name: .colorCommitted,
+                        name: .colourCommitted,
                         object: nil,
                         userInfo: ["r": r, "g": g, "b": b]
                     )
                 }
 
                 // Release window controller
-                self.colorWindowController = nil
+                self.colourWindowController = nil
             },
             onCancel: { [weak self] in
-                self?.colorWindowController = nil
+                self?.colourWindowController = nil
             }
         )
 
         // 3) Present
-        colorWindowController = controller
+        colourWindowController = controller
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
     
-    func setCurrentColor(_ color: NSColor) {
-        currentColor = color
+    func setCurrentColour(_ colour: NSColor) {
+        currentColour = colour
         needsDisplay = true
     }
     
@@ -364,7 +364,7 @@ class CanvasView: NSView {
         }
 
         if let previewPath = currentPath {
-            currentColor.setStroke()
+            currentColour.setStroke()
             previewPath.stroke()
         }
 
@@ -394,7 +394,7 @@ class CanvasView: NSView {
 
             let path = NSBezierPath()
             path.lineWidth = toolSize
-            currentColor.set()
+            currentColour.set()
 
             switch curvePhase {
             case 0:
@@ -417,7 +417,7 @@ class CanvasView: NSView {
             cancelCurvePreview = false
         }
         else if isDrawingShape {
-            currentColor.set()
+            currentColour.set()
             var start = startPoint
             var end = endPoint
 
@@ -552,10 +552,10 @@ class CanvasView: NSView {
             isCreatingText = true
 
         case .eyeDropper:
-            if let picked = pickColor(at: point) {
-                currentColor = picked
-                NotificationCenter.default.post(name: .colorPicked, object: picked)
-                colorFromSelectionWindow = false
+            if let picked = pickColour(at: point) {
+                currentColour = picked
+                NotificationCenter.default.post(name: .colourPicked, object: picked)
+                colourFromSelectionWindow = false
             }
 
         case .pencil, .brush, .eraser:
@@ -566,7 +566,7 @@ class CanvasView: NSView {
 
         case .fill:
             saveUndoState()
-            floodFill(from: point, with: currentColor)
+            floodFill(from: point, with: currentColour)
 
         case .curve:
             switch curvePhase {
@@ -882,7 +882,7 @@ class CanvasView: NSView {
             if pointsAreEqual(startPoint, endPoint) {
                 initializeCanvasIfNeeded()
                 canvasImage?.lockFocus()
-                currentColor.set()
+                currentColour.set()
                 let dotRect = NSRect(x: startPoint.x, y: startPoint.y, width: 1, height: 1)
                 dotRect.fill()
                 canvasImage?.unlockFocus()
@@ -894,7 +894,7 @@ class CanvasView: NSView {
             if pointsAreEqual(startPoint, endPoint) {
                 initializeCanvasIfNeeded()
                 canvasImage?.lockFocus()
-                currentColor.set()
+                currentColour.set()
                 let brushSize: CGFloat = 5
                 let dotRect = NSRect(x: startPoint.x - brushSize/2,
                                      y: startPoint.y - brushSize/2,
@@ -937,7 +937,7 @@ class CanvasView: NSView {
             if pointsAreEqual(startPoint, finalEnd) {
                 initializeCanvasIfNeeded()
                 canvasImage?.lockFocus()
-                currentColor.set()
+                currentColour.set()
                 let dotRect = NSRect(x: startPoint.x, y: startPoint.y, width: 1, height: 1)
                 dotRect.fill()
                 canvasImage?.unlockFocus()
@@ -965,10 +965,10 @@ class CanvasView: NSView {
                 let transform = AffineTransform(translationByX: -canvasRect.origin.x, byY: -canvasRect.origin.y)
                 translatedPath.transform(using: transform)
                 canvasImage?.lockFocus()
-                currentColor.set()
+                currentColour.set()
                 translatedPath.stroke()
                 canvasImage?.unlockFocus()
-                drawnPaths.append((path: translatedPath.copy() as! NSBezierPath, color: currentColor))
+                drawnPaths.append((path: translatedPath.copy() as! NSBezierPath, colour: currentColour))
                 curvePhase = 0
                 curveStart = .zero
                 curveEnd = .zero
@@ -1214,7 +1214,7 @@ class CanvasView: NSView {
 
         let textAttributes: [NSAttributedString.Key: Any] = [
             .font: tv.font ?? NSFont.systemFont(ofSize: 14),
-            .foregroundColor: currentColor
+            .foregroundColor: currentColour
         ]
         
         let attributed = NSAttributedString(string: text, attributes: textAttributes)
@@ -1309,7 +1309,7 @@ class CanvasView: NSView {
         let tv = CanvasTextView(frame: rect)
         tv.font = NSFont.systemFont(ofSize: 14)
         tv.backgroundColor = NSColor.white
-        tv.textColor = currentColor
+        tv.textColor = currentColour
         tv.delegate = self
         tv.isEditable = true
         tv.isSelectable = true
@@ -1335,11 +1335,11 @@ class CanvasView: NSView {
         transformedPath.transform(using: transform)
 
         image.lockFocus()
-        currentColor.setStroke()
+        currentColour.setStroke()
         transformedPath.stroke()
         image.unlockFocus()
 
-        drawnPaths.append((path: transformedPath.copy() as! NSBezierPath, color: currentColor))
+        drawnPaths.append((path: transformedPath.copy() as! NSBezierPath, colour: currentColour))
     }
     
     func rectBetween(_ p1: NSPoint, and p2: NSPoint) -> NSRect {
@@ -1398,18 +1398,18 @@ class CanvasView: NSView {
         translatedPath.lineCapStyle = .butt
         translatedPath.lineJoinStyle = .miter
         
-        var strokeColor: NSColor
+        var strokeColour: NSColor
         var lineWidth: CGFloat
 
         switch currentTool {
         case .pencil:
-            strokeColor = currentColor
+            strokeColour = currentColour
             lineWidth = 1
         case .brush:
-            strokeColor = currentColor
+            strokeColour = currentColour
             lineWidth = toolSize
         case .eraser:
-            strokeColor = .white
+            strokeColour = .white
             lineWidth = toolSize * 3
         default:
             return
@@ -1419,11 +1419,11 @@ class CanvasView: NSView {
 
         // Draw to the canvas image
         canvasImage?.lockFocus()
-        strokeColor.set()
+        strokeColour.set()
         translatedPath.stroke()
         canvasImage?.unlockFocus()
 
-        drawnPaths.append((path: translatedPath.copy() as! NSBezierPath, color: strokeColor))
+        drawnPaths.append((path: translatedPath.copy() as! NSBezierPath, colour: strokeColour))
 
         currentPath = nil
         needsDisplay = true
@@ -1554,7 +1554,7 @@ class CanvasView: NSView {
         }
     }
 
-    func pickColor(at point: NSPoint) -> NSColor? {
+    func pickColour(at point: NSPoint) -> NSColor? {
         let flippedPoint = NSPoint(x: point.x, y: bounds.height - point.y)
         let x = Int(flippedPoint.x)
         let y = Int(flippedPoint.y)
@@ -1594,23 +1594,23 @@ class CanvasView: NSView {
 
         canvasImage?.draw(in: canvasRect)
 
-        for (path, color) in drawnPaths {
-            color.setStroke()
+        for (path, colour) in drawnPaths {
+            colour.setStroke()
             path.stroke()
         }
 
         context.flushGraphics()
         NSGraphicsContext.restoreGraphicsState()
 
-        // 🟡 Sample color at pixel
-        guard let color = rep.colorAt(x: x, y: y) else {
+        // 🟡 Sample colour at pixel
+        guard let colour = rep.colorAt(x: x, y: y) else {
             return nil
         }
 
-        return color
+        return colour
     }
 
-    func floodFill(from point: NSPoint, with fillColor: NSColor) {
+    func floodFill(from point: NSPoint, with fillColour: NSColor) {
         saveUndoState()
         let width = Int(canvasRect.width)
         let height = Int(canvasRect.height)
@@ -1635,8 +1635,8 @@ class CanvasView: NSView {
         NSColor.white.setFill()
         canvasRect.fill()
         canvasImage?.draw(in: canvasRect)
-        for (path, color) in drawnPaths {
-            color.setStroke()
+        for (path, colour) in drawnPaths {
+            colour.setStroke()
             path.stroke()
         }
 
@@ -1657,7 +1657,7 @@ class CanvasView: NSView {
         let targetA = startPixel[3]
 
         var rF: CGFloat = 0, gF: CGFloat = 0, bF: CGFloat = 0, aF: CGFloat = 0
-        fillColor.usingColorSpace(.deviceRGB)?.getRed(&rF, green: &gF, blue: &bF, alpha: &aF)
+        fillColour.usingColorSpace(.deviceRGB)?.getRed(&rF, green: &gF, blue: &bF, alpha: &aF)
         let newR = UInt8(rF * 255)
         let newG = UInt8(gF * 255)
         let newB = UInt8(bF * 255)
@@ -1725,7 +1725,7 @@ class CanvasView: NSView {
     func spray() {
         initializeCanvasIfNeeded()
         canvasImage?.lockFocus()
-        currentColor.setFill()
+        currentColour.setFill()
 
         for _ in 0..<sprayDensity {
             let angle = CGFloat.random(in: 0..<2*CGFloat.pi)
@@ -1832,6 +1832,6 @@ class CanvasView: NSView {
         }
     }
     deinit {
-        NotificationCenter.default.removeObserver(self, name: .colorPicked, object: nil)
+        NotificationCenter.default.removeObserver(self, name: .colourPicked, object: nil)
     }
 }

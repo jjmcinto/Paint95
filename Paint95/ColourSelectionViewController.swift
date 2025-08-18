@@ -1,4 +1,4 @@
-// ColorSelectionViewController.swift
+// ColourSelectionViewController.swift
 /*
 import AppKit
 

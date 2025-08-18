@@ -1,11 +1,11 @@
-// ColorMapProvider.swift
+// ColourMapProvider.swift
 import AppKit
 
-enum ColorMapProvider {
+enum ColourMapProvider {
     static let mapSize = NSSize(width: 360, height: 240) // width sweeps hue, height mixes sat/brightness
-    static let fileName = "colormap.png"
+    static let fileName = "colourmap.png"
 
-    private static var colorMapURL: URL {
+    private static var colourMapURL: URL {
         let fm = FileManager.default
         let appSupport = try! fm.url(for: .applicationSupportDirectory,
                                      in: .userDomainMask,
@@ -19,12 +19,12 @@ enum ColorMapProvider {
         return dir.appendingPathComponent(fileName)
     }
 
-    static func ensureColorMapImage() -> URL? {
-        let url = colorMapURL
+    static func ensureColourMapImage() -> URL? {
+        let url = colourMapURL
         if FileManager.default.fileExists(atPath: url.path) {
             return url
         }
-        guard let image = makeColorMapImage(size: mapSize) else { return nil }
+        guard let image = makeColourMapImage(size: mapSize) else { return nil }
         guard let tiff = image.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:]) else { return nil }
@@ -36,13 +36,13 @@ enum ColorMapProvider {
         }
     }
 
-    private static func makeColorMapImage(size: NSSize) -> NSImage? {
+    private static func makeColourMapImage(size: NSSize) -> NSImage? {
         // Strategy:
         //  - X axis (0 → width): Hue 0..360
         //  - Y axis (top → bottom): mix Saturation/Brightness in a simple 2D ramp:
         //      top row: V=1.0, S from 0→1
         //      bottom row: V from 1→0, S stays 1; then blend the two ramps across height.
-        // This gives a rich “Paint-like” gamut with white top-left, fully vivid colors middle-top-right, darks at bottom.
+        // This gives a rich “Paint-like” gamut with white top-left, fully vivid colours middle-top-right, darks at bottom.
         let w = Int(size.width)
         let h = Int(size.height)
 
@@ -76,10 +76,10 @@ enum ColorMapProvider {
                 let s = sTop * (1 - yf) + sBot * yf
                 let v = vTop * (1 - yf) + vBot * yf
 
-                let color = NSColor(calibratedHue: hue, saturation: s, brightness: v, alpha: 1.0).usingColorSpace(.deviceRGB) ?? .black
-                let r = UInt8(max(0, min(255, Int(round(color.redComponent * 255)))))
-                let g = UInt8(max(0, min(255, Int(round(color.greenComponent * 255)))))
-                let b = UInt8(max(0, min(255, Int(round(color.blueComponent * 255)))))
+                let colour = NSColor(calibratedHue: hue, saturation: s, brightness: v, alpha: 1.0).usingColorSpace(.deviceRGB) ?? .black
+                let r = UInt8(max(0, min(255, Int(round(colour.redComponent * 255)))))
+                let g = UInt8(max(0, min(255, Int(round(colour.greenComponent * 255)))))
+                let b = UInt8(max(0, min(255, Int(round(colour.blueComponent * 255)))))
                 let offset = y * rep.bytesPerRow + x * rep.samplesPerPixel
                 data[offset + 0] = r
                 data[offset + 1] = g
@@ -94,11 +94,11 @@ enum ColorMapProvider {
     }
 
     static func loadImage() -> NSImage? {
-        guard let url = ensureColorMapImage() else { return nil }
+        guard let url = ensureColourMapImage() else { return nil }
         return NSImage(contentsOf: url)
     }
 
-    static func color(at point: NSPoint, in image: NSImage) -> NSColor? {
+    static func colour(at point: NSPoint, in image: NSImage) -> NSColor? {
         // point is in image-pixel coordinates (0..w-1, 0..h-1)
         guard let tiff = image.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff) else { return nil }

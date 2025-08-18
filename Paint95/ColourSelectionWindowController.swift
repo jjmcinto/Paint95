@@ -1,13 +1,13 @@
-// ColorSelectionWindowController.swift
+// ColourSelectionWindowController.swift
 import AppKit
 
-final class ColorSelectionWindowController: NSWindowController, NSWindowDelegate, ColorMapViewDelegate, NSTextFieldDelegate {
+final class ColourSelectionWindowController: NSWindowController, NSWindowDelegate, ColourMapViewDelegate, NSTextFieldDelegate {
 
-    private let onColorSelected: (NSColor) -> Void
+    private let onColourSelected: (NSColor) -> Void
     private let onCancel: () -> Void
 
     // UI
-    private let colorMapView = ColorMapView()
+    private let colourMapView = ColourMapView()
     private let rField = NSTextField()
     private let gField = NSTextField()
     private let bField = NSTextField()
@@ -21,16 +21,16 @@ final class ColorSelectionWindowController: NSWindowController, NSWindowDelegate
     private var initialG: Int
     private var initialB: Int
 
-    private var currentColor: NSColor {
+    private var currentColour: NSColor {
         didSet { updatePreview() }
     }
 
     // MARK: - Init
     init(initialRGB: [Double],
-         onColorSelected: @escaping (NSColor) -> Void,
+         onColourSelected: @escaping (NSColor) -> Void,
          onCancel: @escaping () -> Void = { }) {
         
-        self.onColorSelected = onColorSelected
+        self.onColourSelected = onColourSelected
         self.onCancel = onCancel
 
         let r = Int(initialRGB[safe: 0] ?? 0)
@@ -40,7 +40,7 @@ final class ColorSelectionWindowController: NSWindowController, NSWindowDelegate
         self.initialG = g
         self.initialB = b
 
-        self.currentColor = NSColor(deviceRed: CGFloat(max(0, min(255, r)))/255.0,
+        self.currentColour = NSColor(deviceRed: CGFloat(max(0, min(255, r)))/255.0,
                                     green: CGFloat(max(0, min(255, g)))/255.0,
                                     blue: CGFloat(max(0, min(255, b)))/255.0,
                                     alpha: 1.0)
@@ -50,7 +50,7 @@ final class ColorSelectionWindowController: NSWindowController, NSWindowDelegate
                               styleMask: [.titled, .closable],
                               backing: .buffered,
                               defer: false)
-        window.title = "Select Color"
+        window.title = "Select Colour"
         window.isMovableByWindowBackground = true
         window.center()
 
@@ -60,7 +60,7 @@ final class ColorSelectionWindowController: NSWindowController, NSWindowDelegate
         // Build UI immediately:
         setupUI()
         
-        // Apply initial color AFTER UI exists
+        // Apply initial colour AFTER UI exists
         applyInitialRGB(r: r,
                         g: g,
                         b: b)
@@ -81,15 +81,15 @@ final class ColorSelectionWindowController: NSWindowController, NSWindowDelegate
     private func setupUI() {
         guard let content = window?.contentView else { return }
 
-        // --- LEFT: color map ----------------------------------------------------
-        colorMapView.translatesAutoresizingMaskIntoConstraints = false
-        colorMapView.delegate = self
-        colorMapView.wantsLayer = true
-        colorMapView.layer?.cornerRadius = 6
-        colorMapView.layer?.masksToBounds = true
-        colorMapView.layer?.borderColor = NSColor.separatorColor.cgColor
-        colorMapView.layer?.borderWidth = 1
-        content.addSubview(colorMapView)
+        // --- LEFT: colour map ----------------------------------------------------
+        colourMapView.translatesAutoresizingMaskIntoConstraints = false
+        colourMapView.delegate = self
+        colourMapView.wantsLayer = true
+        colourMapView.layer?.cornerRadius = 6
+        colourMapView.layer?.masksToBounds = true
+        colourMapView.layer?.borderColor = NSColor.separatorColor.cgColor
+        colourMapView.layer?.borderWidth = 1
+        content.addSubview(colourMapView)
 
         // --- RIGHT: controls container ------------------------------------------
         let right = NSView()
@@ -132,21 +132,21 @@ final class ColorSelectionWindowController: NSWindowController, NSWindowDelegate
         right.addSubview(cancelButton)
 
         // --- CONSTRAINTS ---------------------------------------------------------
-        // Color map gets a concrete width so it actually appears, and hugs content.
-        let mapWidth = ColorMapProvider.mapSize.width > 0 ? ColorMapProvider.mapSize.width : 256
+        // Colour map gets a concrete width so it actually appears, and hugs content.
+        let mapWidth = ColourMapProvider.mapSize.width > 0 ? ColourMapProvider.mapSize.width : 256
 
         NSLayoutConstraint.activate([
             // Left/map
-            colorMapView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            colorMapView.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
-            colorMapView.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
-            colorMapView.widthAnchor.constraint(equalToConstant: mapWidth),
+            colourMapView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            colourMapView.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
+            colourMapView.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+            colourMapView.widthAnchor.constraint(equalToConstant: mapWidth),
 
             // Right column
-            right.leadingAnchor.constraint(equalTo: colorMapView.trailingAnchor, constant: 16),
+            right.leadingAnchor.constraint(equalTo: colourMapView.trailingAnchor, constant: 16),
             right.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            right.topAnchor.constraint(equalTo: colorMapView.topAnchor),
-            right.bottomAnchor.constraint(equalTo: colorMapView.bottomAnchor),
+            right.topAnchor.constraint(equalTo: colourMapView.topAnchor),
+            right.bottomAnchor.constraint(equalTo: colourMapView.bottomAnchor),
 
             // Preview at top
             preview.topAnchor.constraint(equalTo: right.topAnchor),
@@ -182,8 +182,8 @@ final class ColorSelectionWindowController: NSWindowController, NSWindowDelegate
         ])
 
         // Make the map prefer its own size (helps avoid compression)
-        colorMapView.setContentHuggingPriority(.required, for: .horizontal)
-        colorMapView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        colourMapView.setContentHuggingPriority(.required, for: .horizontal)
+        colourMapView.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         updatePreview()
         updateHexFromRGB()
@@ -191,30 +191,30 @@ final class ColorSelectionWindowController: NSWindowController, NSWindowDelegate
 
     // MARK: - Actions
     @objc private func tapOK() {
-        // Build color from fields
+        // Build colour from fields
         let r = max(0, min(255, Int(rField.stringValue) ?? 0))
         let g = max(0, min(255, Int(gField.stringValue) ?? 0))
         let b = max(0, min(255, Int(bField.stringValue) ?? 0))
 
-        let color = NSColor(deviceRed: CGFloat(r)/255.0,
+        let colour = NSColor(deviceRed: CGFloat(r)/255.0,
                             green: CGFloat(g)/255.0,
                             blue: CGFloat(b)/255.0,
                             alpha: 1.0)
         
-        if let c = colorFromFields() {
-            onColorSelected(c)
+        if let c = colourFromFields() {
+            onColourSelected(c)
         } else {
-            onColorSelected(currentColor)
+            onColourSelected(currentColour)
         }
         NotificationCenter.default.post(
-            name: .colorCommitted,
+            name: .colourCommitted,
             object: nil,
             userInfo: ["r": r, "g": g, "b": b]
         )
         initialR = r
         initialG = g
         initialB = b
-        AppColorState.shared.rgb = [
+        AppColourState.shared.rgb = [
             Double(r),
             Double(g),
             Double(b)
@@ -227,16 +227,16 @@ final class ColorSelectionWindowController: NSWindowController, NSWindowDelegate
         close()
     }
 
-    // MARK: - ColorMapViewDelegate
-    func colorMapView(_ view: ColorMapView, didPick color: NSColor) {
-        let dev = color.usingColorSpace(.deviceRGB) ?? color
+    // MARK: - ColourMapViewDelegate
+    func colourMapView(_ view: ColourMapView, didPick colour: NSColor) {
+        let dev = colour.usingColorSpace(.deviceRGB) ?? colour
         let r = Int(round(dev.redComponent * 255))
         let g = Int(round(dev.greenComponent * 255))
         let b = Int(round(dev.blueComponent * 255))
         applyInitialRGB(r: r, g: g, b: b)
     }
 
-    // MARK: - Fields <-> Color
+    // MARK: - Fields <-> Colour
     private func integer255Formatter() -> NumberFormatter {
         let nf = NumberFormatter()
         nf.minimum = 0
@@ -249,14 +249,14 @@ final class ColorSelectionWindowController: NSWindowController, NSWindowDelegate
         rField.stringValue = "\(clamp255(r))"
         gField.stringValue = "\(clamp255(g))"
         bField.stringValue = "\(clamp255(b))"
-        currentColor = NSColor(deviceRed: CGFloat(clamp255(r))/255.0,
+        currentColour = NSColor(deviceRed: CGFloat(clamp255(r))/255.0,
                                green: CGFloat(clamp255(g))/255.0,
                                blue: CGFloat(clamp255(b))/255.0,
                                alpha: 1.0)
         updateHexFromRGB()
     }
 
-    private func colorFromFields() -> NSColor? {
+    private func colourFromFields() -> NSColor? {
         guard let r = Int(rField.stringValue),
               let g = Int(gField.stringValue),
               let b = Int(bField.stringValue) else { return nil }
@@ -268,11 +268,11 @@ final class ColorSelectionWindowController: NSWindowController, NSWindowDelegate
     }
 
     private func updatePreview() {
-        preview.layer?.backgroundColor = currentColor.cgColor
+        preview.layer?.backgroundColor = currentColour.cgColor
     }
 
     private func updateHexFromRGB() {
-        guard let c = colorFromFields() else { return }
+        guard let c = colourFromFields() else { return }
         let dev = c.usingColorSpace(.deviceRGB) ?? c
         let r = Int(round(dev.redComponent * 255))
         let g = Int(round(dev.greenComponent * 255))
@@ -295,7 +295,7 @@ final class ColorSelectionWindowController: NSWindowController, NSWindowDelegate
         if let field = obj.object as? NSTextField, field == hexField {
             updateRGBFromHex()
         } else {
-            if let c = colorFromFields() { currentColor = c }
+            if let c = colourFromFields() { currentColour = c }
             updateHexFromRGB()
         }
     }
