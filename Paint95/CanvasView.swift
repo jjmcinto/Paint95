@@ -150,8 +150,10 @@ class CanvasView: NSView {
 
         // Create file path
         let path = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents/Jeffrey/projects/PaintProgram/out.jpg")
+            .appendingPathComponent("out.jpg")
+            //.appendingPathComponent("Documents/Jeffrey/projects/PaintProgram/out.jpg")
 
+        print("path:", path.absoluteString)
         // Convert NSImage to JPEG data
         guard let tiffData = canvasImage.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiffData),
@@ -162,6 +164,7 @@ class CanvasView: NSView {
         do {
             try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
             try jpegData.write(to: path)
+            print("Saved!")
         } catch {
             print("Save failed: \(error)")
         }

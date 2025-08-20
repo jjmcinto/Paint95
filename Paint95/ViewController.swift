@@ -98,7 +98,7 @@ class ViewController: NSViewController, ToolbarDelegate, ColourPaletteDelegate, 
             host.addSubview(scroll)
             
             // --- Signature label (between canvas and palette) ---
-            let signatureLabel = NSTextField(labelWithString: "© 2025 Paint95 — jjmcinto")
+            let signatureLabel = NSTextField(labelWithString: "© 2025 Paint95 — Jeffrey McIntosh")
             signatureLabel.translatesAutoresizingMaskIntoConstraints = false
             signatureLabel.alignment = .center
             signatureLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
