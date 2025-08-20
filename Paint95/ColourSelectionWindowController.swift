@@ -196,11 +196,6 @@ final class ColourSelectionWindowController: NSWindowController, NSWindowDelegat
         let g = max(0, min(255, Int(gField.stringValue) ?? 0))
         let b = max(0, min(255, Int(bField.stringValue) ?? 0))
 
-        let colour = NSColor(deviceRed: CGFloat(r)/255.0,
-                            green: CGFloat(g)/255.0,
-                            blue: CGFloat(b)/255.0,
-                            alpha: 1.0)
-        
         if let c = colourFromFields() {
             onColourSelected(c)
         } else {

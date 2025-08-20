@@ -89,14 +89,17 @@ class CanvasView: NSView {
     var handlePositions: [NSPoint] {
         let offset = handleSize / 2
         return [
-            NSPoint(x: canvasRect.minX - offset, y: canvasRect.minY - offset), // bottom-left
-            NSPoint(x: canvasRect.midX - offset, y: canvasRect.minY - offset), // bottom-center
-            NSPoint(x: canvasRect.maxX, y: canvasRect.minY - offset),          // bottom-right
-            NSPoint(x: canvasRect.minX - offset, y: canvasRect.midY - offset), // middle-left
-            NSPoint(x: canvasRect.maxX, y: canvasRect.midY - offset),          // middle-right
-            NSPoint(x: canvasRect.minX - offset, y: canvasRect.maxY),          // top-left
-            NSPoint(x: canvasRect.midX - offset, y: canvasRect.maxY),          // top-center
-            NSPoint(x: canvasRect.maxX, y: canvasRect.maxY)                    // top-right
+            // bottom row
+            NSPoint(x: canvasRect.minX - offset, y: canvasRect.minY - offset),              // bottom-left
+            NSPoint(x: canvasRect.midX - offset, y: canvasRect.minY - offset),              // bottom-center
+            NSPoint(x: canvasRect.maxX - offset, y: canvasRect.minY - offset),              // bottom-right
+            // middle
+            NSPoint(x: canvasRect.minX - offset, y: canvasRect.midY - offset),              // middle-left
+            NSPoint(x: canvasRect.maxX - offset, y: canvasRect.midY - offset),              // middle-right
+            // top row
+            NSPoint(x: canvasRect.minX - offset, y: canvasRect.maxY - offset),              // top-left
+            NSPoint(x: canvasRect.midX - offset, y: canvasRect.maxY - offset),              // top-center
+            NSPoint(x: canvasRect.maxX - offset, y: canvasRect.maxY - offset)               // top-right
         ]
     }
     
@@ -127,6 +130,10 @@ class CanvasView: NSView {
     private var redoStack: [NSImage] = []
     private let maxUndoSteps = 5
     private var cancelCurvePreview = false
+    
+    // Scroll
+    override var isOpaque: Bool { true }  // avoids transparent compositing
+    override var wantsUpdateLayer: Bool { false }
     
     func setActiveColour(_ colour: NSColor, for slot: ActiveColourSlot) {
         switch slot {
@@ -290,8 +297,6 @@ class CanvasView: NSView {
     
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-
-        clearCanvasRegion(rect: dirtyRect, lockFocus: false)
         
         // === Canvas image drawing ===
         if isResizingCanvas {
@@ -471,7 +476,7 @@ class CanvasView: NSView {
             for (i, handle) in selectionHandlePositions(rect: rect).enumerated() {
                 if handle.contains(point) {
                     saveUndoState()  // <-- checkpoint before selection resize
-                    activeResizeHandle = ResizeHandle(rawValue: i)
+                    activeSelectionHandle = SelectionHandle(rawValue: i)
                     isResizingSelection = true
                     resizeStartPoint = point
                     originalSelectionRect = rect
@@ -606,7 +611,7 @@ class CanvasView: NSView {
         let shiftPressed = event.modifierFlags.contains(.shift)
         
         // === Selection resizing (reuse for pasted content; non-destructive while pasting) ===
-        if isResizingSelection, let handle = activeResizeHandle {
+        if isResizingSelection, let handle = activeSelectionHandle {
             let dx = point.x - resizeStartPoint.x
             let dy = point.y - resizeStartPoint.y
             var newRect = originalSelectionRect
@@ -807,7 +812,7 @@ class CanvasView: NSView {
 
         if isResizingSelection {
             isResizingSelection = false
-            activeResizeHandle = nil
+            activeSelectionHandle = nil
             needsDisplay = true
             return
         }
@@ -999,7 +1004,6 @@ class CanvasView: NSView {
             )
             needsDisplay = true
         }
-
         window?.invalidateCursorRects(for: self)
     }
     
@@ -1123,7 +1127,19 @@ class CanvasView: NSView {
             selectedImage = img
             selectedImageOrigin = origin
             selectionRect = NSRect(origin: origin, size: img.size)
-
+            
+            //scroll to show pasted content
+            if let clipView = superview as? NSClipView {
+                clipView.scrollToVisible(NSRect(origin: origin, size: selectedImage!.size))
+            }
+            
+            // Ensure the canvas is large enough to show it; grow if needed.
+            let requiredWidth  = max(canvasRect.width,  origin.x + img.size.width)
+            let requiredHeight = max(canvasRect.height, origin.y + img.size.height)
+            if requiredWidth != canvasRect.width || requiredHeight != canvasRect.height {
+                updateCanvasSize(to: NSSize(width: requiredWidth, height: requiredHeight))
+            }
+            
             // Ensure the selection tool is active so move/resize works
             currentTool = .select
             NotificationCenter.default.post(name: .toolChanged, object: PaintTool.select)
@@ -1190,17 +1206,20 @@ class CanvasView: NSView {
     func selectionHandlePositions(rect: NSRect) -> [NSRect] {
         let size: CGFloat = 6
         let half = size / 2
-        return [
-            NSRect(x: rect.minX - half, y: rect.minY - half, width: size, height: size), // bottom-left
-            NSRect(x: rect.midX - half, y: rect.minY - half, width: size, height: size), // bottom-center
-            NSRect(x: rect.maxX - half, y: rect.minY - half, width: size, height: size),  // bottom-right
-            NSRect(x: rect.minX - half, y: rect.midY - half, width: size, height: size), // middle-left
-            NSRect(x: rect.maxX - half, y: rect.midY - half, width: size, height: size), // middle-right
-            NSRect(x: rect.minX - half, y: rect.maxY - half, width: size, height: size), // top-left
-            NSRect(x: rect.midX - half, y: rect.maxY - half, width: size, height: size), // top-center
-            NSRect(x: rect.maxX - half, y: rect.maxY - half, width: size, height: size) // top-right
-        ]
+
+        // Order must match SelectionHandle raw values
+        let tl = NSRect(x: rect.minX - half, y: rect.maxY - half, width: size, height: size) // top-left
+        let tc = NSRect(x: rect.midX - half, y: rect.maxY - half, width: size, height: size) // top-center
+        let tr = NSRect(x: rect.maxX - half, y: rect.maxY - half, width: size, height: size) // top-right
+        let ml = NSRect(x: rect.minX - half, y: rect.midY - half, width: size, height: size) // middle-left
+        let mr = NSRect(x: rect.maxX - half, y: rect.midY - half, width: size, height: size) // middle-right
+        let bl = NSRect(x: rect.minX - half, y: rect.minY - half, width: size, height: size) // bottom-left
+        let bc = NSRect(x: rect.midX - half, y: rect.minY - half, width: size, height: size) // bottom-center
+        let br = NSRect(x: rect.maxX - half, y: rect.minY - half, width: size, height: size) // bottom-right
+
+        return [tl, tc, tr, ml, mr, bl, bc, br]
     }
+
     
     func commitTextView(_ tv: NSTextView) {
         let text = tv.string
@@ -1273,34 +1292,13 @@ class CanvasView: NSView {
     }
     
     private func cropCanvasImageToCanvasRect() {
-        guard let image = canvasImage else { return }
-
-        // Create a new image the same size as the new canvasRect
+        // Whether shrinking or growing, rebuild the backing image to the new size
         let newSize = canvasRect.size
-        let newImage = NSImage(size: newSize)
+        resizeBackingImage(to: newSize)
 
-        // Source origin is relative to the original image (always top-left origin)
-        let sourceRect = NSRect(origin: canvasRect.origin, size: newSize)
-
-        // Destination rect always starts at (0, 0)
-        let destRect = NSRect(origin: .zero, size: newSize)
-
-        newImage.lockFocus()
-
-        image.draw(
-            in: destRect,
-            from: sourceRect,
-            operation: .copy,
-            fraction: 1.0,
-            respectFlipped: true,
-            hints: [.interpolation: NSImageInterpolation.none]
-        )
-
-        newImage.unlockFocus()
-
-        // Update the canvas image and reset origin to zero
-        canvasImage = newImage
+        // After resizing the image we reset origin to zero and ensure our view matches
         canvasRect.origin = .zero
+        updateCanvasSize(to: newSize)
     }
     
     func createTextView(in rect: NSRect) {
@@ -1429,25 +1427,67 @@ class CanvasView: NSView {
         needsDisplay = true
     }
     
+    private func resizeBackingImage(to newSize: NSSize) {
+        if canvasImage == nil {
+            // Create a fresh white image of the requested size
+            let img = NSImage(size: newSize)
+            img.lockFocus()
+            NSColor.white.setFill()
+            NSBezierPath(rect: NSRect(origin: .zero, size: newSize)).fill()
+            img.unlockFocus()
+            canvasImage = img
+            return
+        }
+
+        guard let old = canvasImage else { return }
+        let oldSize = old.size
+
+        // Create the new canvas image (white background)
+        let newImage = NSImage(size: newSize)
+        newImage.lockFocus()
+        NSColor.white.setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: newSize)).fill()
+
+        // Copy the overlapping area 1:1 (no scaling)
+        let copySize = NSSize(width: min(oldSize.width, newSize.width),
+                              height: min(oldSize.height, newSize.height))
+        let srcRect = NSRect(origin: .zero, size: copySize)
+        let dstRect = srcRect // same size/origin => no scaling
+
+        old.draw(in: dstRect,
+                 from: srcRect,
+                 operation: .copy,
+                 fraction: 1.0,
+                 respectFlipped: true,
+                 hints: [.interpolation: NSImageInterpolation.none])
+
+        newImage.unlockFocus()
+        canvasImage = newImage
+    }
+    
     override func resetCursorRects() {
         super.resetCursorRects()
-        
-        // Canvas resize handles
+
+        // Canvas handles
         for (i, position) in handlePositions.enumerated() {
-            let handleRect = NSRect(x: position.x, y: position.y, width: handleSize, height: handleSize)
-            let cursor = cursorForHandle(index: i)
-            addCursorRect(handleRect, cursor: cursor)
+            let r = NSRect(x: position.x, y: position.y, width: handleSize, height: handleSize)
+            let clipped = r.intersection(bounds)
+            if !clipped.isEmpty {
+                addCursorRect(clipped, cursor: cursorForHandle(index: i))
+            }
         }
-        
-        // Selection resize handles (if selection or pasted image exists)
+
+        // Selection handles (see fix #2 below)
         if let selectionFrame = (selectedImage != nil
             ? NSRect(origin: selectedImageOrigin ?? .zero, size: selectedImage!.size)
             : selectionRect) {
 
             let selectionHandles = selectionHandlePositions(rect: selectionFrame)
-            for (i, handleRect) in selectionHandles.enumerated() {
-                let cursor = cursorForHandle(index: i)
-                addCursorRect(handleRect, cursor: cursor)
+            for (i, r) in selectionHandles.enumerated() {
+                let clipped = r.intersection(bounds)
+                if !clipped.isEmpty {
+                    addCursorRect(clipped, cursor: selectionCursorForHandle(index: i))
+                }
             }
         }
     }
@@ -1464,6 +1504,26 @@ class CanvasView: NSView {
             return NSCursor(image: NSImage(byReferencingFile: "/System/Library/Frameworks/WebKit.framework/Versions/Current/Frameworks/WebCore.framework/Resources/northEastSouthWestResizeCursor.png")!, hotSpot: NSPoint(x: 8, y: 8))
         default:
             return .arrow // fallback for corners
+        }
+    }
+    
+    private func selectionCursorForHandle(index: Int) -> NSCursor {
+        // SelectionHandle order: topLeft(0), topCenter(1), topRight(2),
+        //                        middleLeft(3), middleRight(4),
+        //                        bottomLeft(5), bottomCenter(6), bottomRight(7)
+        switch index {
+        case 1, 6:
+            return .resizeUpDown
+        case 3, 4:
+            return .resizeLeftRight
+        case 0, 2:
+            // topLeft / topRight => diagonals
+            return NSCursor(image: NSImage(byReferencingFile: "/System/Library/Frameworks/WebKit.framework/Versions/Current/Frameworks/WebCore.framework/Resources/northWestSouthEastResizeCursor.png")!, hotSpot: NSPoint(x: 8, y: 8))
+        case 5, 7:
+            // bottomLeft / bottomRight => opposite diagonals
+            return NSCursor(image: NSImage(byReferencingFile: "/System/Library/Frameworks/WebKit.framework/Versions/Current/Frameworks/WebCore.framework/Resources/northEastSouthWestResizeCursor.png")!, hotSpot: NSPoint(x: 8, y: 8))
+        default:
+            return .arrow
         }
     }
     
@@ -1516,8 +1576,11 @@ class CanvasView: NSView {
             canvasImage = NSImage(size: canvasRect.size)
             canvasImage?.lockFocus()
             NSColor.white.set()
-            NSBezierPath(rect: bounds).fill()
+            NSBezierPath(rect: NSRect(origin: .zero, size: canvasRect.size)).fill()
             canvasImage?.unlockFocus()
+
+            // Ensure our view/frame matches the canvas
+            updateCanvasSize(to: canvasRect.size)
         }
     }
     
@@ -1831,6 +1894,28 @@ class CanvasView: NSView {
             needsDisplay = true
         }
     }
+    
+    // Make the scroll view ask for our size when needed
+    override var intrinsicContentSize: NSSize {
+        return canvasRect.size
+    }
+
+    // The key method the rest of the code will call whenever the canvas needs to change size
+    @discardableResult
+    func updateCanvasSize(to newSize: NSSize) -> NSSize {
+        // Keep the bitmap in sync with the logical canvas rect
+        resizeBackingImage(to: newSize)
+
+        // Update model + frame
+        canvasRect.size = newSize
+        setFrameSize(newSize)
+        window?.invalidateCursorRects(for: self)
+
+        invalidateIntrinsicContentSize()
+        needsDisplay = true
+        return newSize
+    }
+    
     deinit {
         NotificationCenter.default.removeObserver(self, name: .colourPicked, object: nil)
     }
