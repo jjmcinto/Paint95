@@ -49,11 +49,24 @@ class ViewController: NSViewController, ToolbarDelegate, ColourPaletteDelegate, 
         
         // Add the tool-size selector to the bottom row (to the right of the palette)
         bottomRow.addArrangedSubview(toolSizeSelectorView)
-        NSLayoutConstraint.activate([
-            toolSizeSelectorView.heightAnchor.constraint(equalToConstant: 36)
-        ])
+        // Tool size selector beside the palette, same height, stretches to the right
         toolSizeSelectorView.setContentHuggingPriority(.defaultLow, for: .horizontal)
         toolSizeSelectorView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        NSLayoutConstraint.activate([
+            // vertically aligned with the palette
+            toolSizeSelectorView.topAnchor.constraint(equalTo: colourPaletteView.topAnchor),
+            toolSizeSelectorView.bottomAnchor.constraint(equalTo: colourPaletteView.bottomAnchor),
+
+            // placed immediately to the right of the palette
+            toolSizeSelectorView.leadingAnchor.constraint(equalTo: colourPaletteView.trailingAnchor, constant: 12),
+
+            // stretch all the way to the right edge
+            toolSizeSelectorView.trailingAnchor.constraint(equalTo: self.view.trailingAnchor, constant: -12),
+
+            // give it a *minimum* comfortable width so it doesn't get tiny
+            toolSizeSelectorView.widthAnchor.constraint(greaterThanOrEqualToConstant: 260)
+        ])
         colourPaletteView.setContentHuggingPriority(.required, for: .horizontal)
         
         // Position the entire bottom row: to the right of the toolbar, along the bottom, full width
@@ -83,11 +96,29 @@ class ViewController: NSViewController, ToolbarDelegate, ColourPaletteDelegate, 
             scroll.backgroundColor = .windowBackgroundColor
             
             host.addSubview(scroll)
+            
+            // --- Signature label (between canvas and palette) ---
+            let signatureLabel = NSTextField(labelWithString: "© 2025 Paint95 — jjmcinto")
+            signatureLabel.translatesAutoresizingMaskIntoConstraints = false
+            signatureLabel.alignment = .center
+            signatureLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            signatureLabel.textColor = .secondaryLabelColor
+            signatureLabel.lineBreakMode = .byTruncatingTail
+            host.addSubview(signatureLabel)
+            
             NSLayoutConstraint.activate([
                 scroll.leadingAnchor.constraint(equalTo: toolbarView.trailingAnchor, constant: 8),
                 scroll.topAnchor.constraint(equalTo: self.view.topAnchor, constant: 8),
-                scroll.bottomAnchor.constraint(equalTo: bottomRow.topAnchor, constant: -8),
+                scroll.bottomAnchor.constraint(equalTo: signatureLabel.topAnchor, constant: -4),
                 scroll.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: 0)
+            ])
+            NSLayoutConstraint.activate([
+                // horizontally aligned with the canvas area (to the right of the toolbar)
+                signatureLabel.leadingAnchor.constraint(equalTo: toolbarView.trailingAnchor, constant: 8),
+                signatureLabel.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -8),
+
+                // sits just above the bottom row (palette + tool-size)
+                signatureLabel.bottomAnchor.constraint(equalTo: colourPaletteView.topAnchor, constant: -4)
             ])
             
             oldCanvas.translatesAutoresizingMaskIntoConstraints = true
@@ -105,6 +136,15 @@ class ViewController: NSViewController, ToolbarDelegate, ColourPaletteDelegate, 
     
     override func viewDidAppear() {
         super.viewDidAppear()
+        
+        // Ensure the window is resizable and has a sane minimum size
+        if let win = self.view.window {
+            win.styleMask.insert(.resizable)
+            // If you had a too-large minimum size somewhere, tame it:
+            win.minSize = NSSize(width: 640, height: 480)
+            // (Optional) if maxSize was set elsewhere, clear it:
+            win.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        }
     }
 
     
