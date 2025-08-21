@@ -1,18 +1,13 @@
 // ColourMapView.swift
 import AppKit
 
-protocol ColourMapViewDelegate: AnyObject {
-    func colourMapView(_ view: ColourMapView, didPick colour: NSColor)
-}
-
 final class ColourMapView: NSView {
-    weak var delegate: ColourMapViewDelegate?
+    weak var delegate: ColourPaletteDelegate?
 
     private var image: NSImage? {
         didSet { needsDisplay = true }
     }
 
-    // If you want y=0 at top to match typical palettes:
     override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {
@@ -24,7 +19,7 @@ final class ColourMapView: NSView {
         super.init(coder: coder)
         commonInit()
     }
-    
+
     private func commonInit() {
         wantsLayer = true
         layer?.cornerRadius = 6
@@ -32,7 +27,6 @@ final class ColourMapView: NSView {
 
         image = ColourMapProvider.loadImage()
 
-        // Track in visible rect so we don't need to update when bounds change
         let ta = NSTrackingArea(
             rect: bounds,
             options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
@@ -40,6 +34,10 @@ final class ColourMapView: NSView {
             userInfo: nil
         )
         addTrackingArea(ta)
+
+        // Prefer the palette’s native size
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
     }
 
     override var intrinsicContentSize: NSSize {
@@ -49,13 +47,10 @@ final class ColourMapView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-
         NSColor.windowBackgroundColor.setFill()
         dirtyRect.fill()
 
         guard let img = image else { return }
-
-        // Draw the palette to fill our bounds
         img.draw(
             in: bounds,
             from: NSRect(origin: .zero, size: img.size),
@@ -66,20 +61,40 @@ final class ColourMapView: NSView {
         )
     }
 
+    // MARK: - Picking (sample exactly what’s on screen)
     override func mouseDown(with event: NSEvent) {
-        guard let img = image else { return }
-        let local = convert(event.locationInWindow, from: nil)
-        let pixelPoint = mapToImagePixel(localPoint: local, image: img)
-        guard let picked = ColourMapProvider.colour(at: pixelPoint, in: img) else { return }
-        delegate?.colourMapView(self, didPick: picked)
+        pick(at: convert(event.locationInWindow, from: nil))
     }
 
-    private func mapToImagePixel(localPoint: NSPoint, image: NSImage) -> NSPoint {
-        // Map a point in our view to the corresponding pixel in the image.
-        let sx = image.size.width / bounds.width
-        let sy = image.size.height / bounds.height
-        let x = localPoint.x * sx
-        let y = localPoint.y * sy
-        return NSPoint(x: x, y: y)
+    override func mouseDragged(with event: NSEvent) {
+        pick(at: convert(event.locationInWindow, from: nil))
+    }
+
+    private func pick(at localPoint: NSPoint) {
+        guard let c = sampledColour(at: localPoint) else { return }
+        delegate?.colourSelected(c)
+    }
+
+    private func sampledColour(at viewPoint: NSPoint) -> NSColor? {
+        let bounds = self.bounds
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+
+        // Capture the actual rendered pixels of this view (handles Retina & scaling)
+        guard let rep = bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
+        cacheDisplay(in: bounds, to: rep)
+
+        // Map view coords -> bitmap pixel coords
+        let scaleX = CGFloat(rep.pixelsWide) / bounds.width
+        let scaleY = CGFloat(rep.pixelsHigh) / bounds.height
+
+        let px = Int((viewPoint.x * scaleX).rounded(.down))
+        // NSBitmapImageRep’s (0,0) is bottom-left; our view is flipped (y=0 top),
+        // so convert accordingly.
+        let py = Int((viewPoint.y * scaleY).rounded(.down))
+
+        guard px >= 0, py >= 0, px < rep.pixelsWide, py < rep.pixelsHigh,
+              let c = rep.colorAt(x: px, y: py) else { return nil }
+
+        return c.usingColorSpace(.deviceRGB)
     }
 }

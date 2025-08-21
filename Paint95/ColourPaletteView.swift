@@ -5,22 +5,18 @@ protocol ColourPaletteDelegate: AnyObject {
     func colourSelected(_ colour: NSColor)
 }
 
-
-
 class ColourPaletteView: NSView {
     weak var delegate: ColourPaletteDelegate?
 
     var selectedColour: NSColor = .black {
-        didSet {
-            needsDisplay = true
-        }
+        didSet { needsDisplay = true }
     }
     
     let colours: [NSColor] = [
         .black, .darkGray, .gray, .white,
         .red, .green, .blue, .cyan,
         .yellow, .magenta, .orange, .brown,
-        NSColor.systemPink, NSColor.systemIndigo, NSColor.systemTeal, NSColor.systemPurple
+        .systemPink, .systemIndigo, .systemTeal, .systemPurple
     ]
 
     override func draw(_ dirtyRect: NSRect) {
@@ -41,12 +37,43 @@ class ColourPaletteView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        let col = Int(point.x / 22)
-        let row = Int(point.y / 22)
-        let index = row * 8 + col
-        if colours.indices.contains(index) {
-            delegate?.colourSelected(colours[index])
+        let p = convert(event.locationInWindow, from: nil)
+        if let c = sampledColour(at: p) {
+            delegate?.colourSelected(c)
+            needsDisplay = true
         }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        if let c = sampledColour(at: p) {
+            delegate?.colourSelected(c)
+            needsDisplay = true
+        }
+    }
+    
+    private func sampledColour(at viewPoint: NSPoint) -> NSColor? {
+        let bounds = self.bounds
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+
+        guard let rep = bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
+        cacheDisplay(in: bounds, to: rep)
+
+        let scaleX = CGFloat(rep.pixelsWide) / bounds.width
+        let scaleY = CGFloat(rep.pixelsHigh) / bounds.height
+
+        let px = Int((viewPoint.x * scaleX).rounded(.down))
+        let py: Int = {
+            if isFlipped {
+                return Int((viewPoint.y * scaleY).rounded(.down))
+            } else {
+                return Int(((bounds.height - viewPoint.y) * scaleY).rounded(.down))
+            }
+        }()
+
+        guard px >= 0, py >= 0, px < rep.pixelsWide, py < rep.pixelsHigh,
+              let c = rep.colorAt(x: px, y: py) else { return nil }
+
+        return c.usingColorSpace(.deviceRGB)
     }
 }

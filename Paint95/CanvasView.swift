@@ -257,21 +257,6 @@ class CanvasView: NSView {
         }
     }
     
-    @objc public func handleDeleteKey() {
-        if isPastingActive {
-            pastedImage = nil
-            pastedImageOrigin = nil
-            isPastingImage = false
-            isPastingActive = false
-            needsDisplay = true
-        } else if let rect = selectionRect {
-            clearCanvasRegion(rect: rect)
-            selectionRect = nil
-            selectedImage = nil
-            needsDisplay = true
-        }
-    }
-    
     func showColourSelectionWindow() {
         // 1) Start from the ACTIVE swatch (primary or secondary)
         let baseColour: NSColor = (activeColourSlot == .primary) ? primaryColour : secondaryColour
@@ -1642,7 +1627,7 @@ class CanvasView: NSView {
     func deleteSelectionOrPastedImage() {
         saveUndoState()
         if isPastingActive {
-            // Clear the uncommitted pasted content
+            // Cancel paste: do NOT alter the canvas; just drop the overlay.
             pastedImage = nil
             pastedImageOrigin = nil
             pasteDragOffset = nil
@@ -1651,6 +1636,9 @@ class CanvasView: NSView {
             isDraggingPastedImage = false
             isPastingImage = false
             isPastingActive = false
+            selectedImage = nil
+            selectedImageOrigin = nil
+            selectionRect = nil
             needsDisplay = true
             return
         }
@@ -1663,11 +1651,12 @@ class CanvasView: NSView {
             canvasImage?.unlockFocus()
 
             drawnPaths.removeAll { (path, _) in
-                    return path.bounds.intersects(rect)
-                }
-            
+                path.bounds.intersects(rect)
+            }
+
             selectionRect = nil
             selectedImage = nil
+            selectedImageOrigin = nil
             needsDisplay = true
         }
     }
@@ -1894,8 +1883,8 @@ class CanvasView: NSView {
             default:
                 break
             }
-        } else if event.keyCode == 51 { // Delete key
-            handleDeleteKey()
+        } else if event.keyCode == 51 || event.keyCode == 117 { // Delete key
+            deleteSelectionOrPastedImage()
             return true
         }
         return super.performKeyEquivalent(with: event)

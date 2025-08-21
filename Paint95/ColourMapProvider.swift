@@ -4,6 +4,16 @@ import AppKit
 enum ColourMapProvider {
     static let mapSize = NSSize(width: 360, height: 240) // width sweeps hue, height mixes sat/brightness
     static let fileName = "colourmap.png"
+    private static let hueStops: [(CGFloat, NSColor)] = [
+        (0.0,   NSColor.red),
+        (0.08,  NSColor.orange), // give orange explicit space
+        (0.17,  NSColor.yellow),
+        (0.33,  NSColor.green),
+        (0.5,   NSColor.cyan),
+        (0.67,  NSColor.blue),
+        (0.83,  NSColor.magenta),
+        (1.0,   NSColor.red)
+    ]
 
     private static var colourMapURL: URL {
         let fm = FileManager.default
@@ -94,8 +104,30 @@ enum ColourMapProvider {
     }
 
     static func loadImage() -> NSImage? {
-        guard let url = ensureColourMapImage() else { return nil }
-        return NSImage(contentsOf: url)
+        let size = mapSize
+        let image = NSImage(size: size)
+        image.lockFocus()
+
+        // Horizontal hue gradient with bias for orange
+        let gradient = NSGradient(colorsAndLocations:
+            (NSColor.red, 0.0),
+            (NSColor.orange, 0.08),
+            (NSColor.yellow, 0.17),
+            (NSColor.green, 0.33),
+            (NSColor.cyan, 0.5),
+            (NSColor.blue, 0.67),
+            (NSColor.magenta, 0.83),
+            (NSColor.red, 1.0)
+        )
+
+        gradient?.draw(in: NSRect(origin: .zero, size: size), angle: 0)
+
+        // Vertical fade to white at bottom
+        let whiteGradient = NSGradient(colors: [NSColor.clear, NSColor.white])!
+        whiteGradient.draw(in: NSRect(origin: .zero, size: size), angle: 90)
+
+        image.unlockFocus()
+        return image
     }
 
     static func colour(at point: NSPoint, in image: NSImage) -> NSColor? {

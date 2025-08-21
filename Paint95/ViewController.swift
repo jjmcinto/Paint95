@@ -185,13 +185,12 @@ class ViewController: NSViewController, ToolbarDelegate, ColourPaletteDelegate, 
     
     func handleGlobalKeyDown(_ event: NSEvent) -> NSEvent? {
         // 1) If a sheet/panel is key, let it handle typing.
-        if NSApp.keyWindow !== self.view.window {
-            return event
-        }
+        if NSApp.keyWindow !== self.view.window { return event }
+        if let fr = self.view.window?.firstResponder, !(fr is CanvasView) { return event }
         
         switch event.keyCode {
-            case 51: // DELETE
-                canvasView.handleDeleteKey()
+            case 51, 117: // DELETE
+                canvasView.deleteSelectionOrPastedImage()
                 return nil
             case 123: // ←
                 canvasView.moveSelectionBy(dx: -1, dy: 0)
