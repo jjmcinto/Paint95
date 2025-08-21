@@ -4,30 +4,20 @@ import Cocoa
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
 
-    // If you use a storyboard window, this will be set automatically by AppKit
-    // (we don't rely on it for logic below).
     var window: NSWindow?
-
-    // Track where "Save" should write (so Save vs Save As behaves correctly)
     private var currentDocumentURL: URL?
-
-    // Reuse across Page Setup / Print
-    private var sharedPrintInfo = NSPrintInfo.shared
 
     // MARK: - App lifecycle
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        // Ensure we own the menu bar before storyboard could inject one.
         constructMenuBar()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // In storyboard setups this usually already exists. If you create your
-        // window in code, you can init it here. Either way, (re)build menu.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         constructMenuBar()
-        
+
         // Create the main window
         let frame = NSRect(x: 200, y: 200, width: 1000, height: 700)
         window = NSWindow(
@@ -38,10 +28,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window?.title = "Paint95"
 
-        // Load the storyboard's initial ViewController
+        // Load storyboard VC
         let storyboard = NSStoryboard(name: "Main", bundle: nil)
         let rootVC = storyboard.instantiateInitialController() as? NSViewController
-            ?? ViewController() // fallback if storyboard isn’t set as initial
+            ?? ViewController()
 
         window?.contentViewController = rootVC
         window?.center()
@@ -54,14 +44,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func constructMenuBar() {
         let main = NSMenu()
 
-        // ===== App (Paint95) menu =====
+        // ===== App (Paint95) =====
         let appName = ProcessInfo.processInfo.processName
         let appItem = NSMenuItem()
         main.addItem(appItem)
 
         let appMenu = NSMenu(title: appName)
 
-        // About
         let about = NSMenuItem(
             title: "About \(appName)",
             action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
@@ -69,10 +58,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         about.target = NSApp
         appMenu.addItem(about)
-
         appMenu.addItem(NSMenuItem.separator())
 
-        // Hide / Hide Others / Show All
         let hide = NSMenuItem(title: "Hide \(appName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         hide.target = NSApp
         appMenu.addItem(hide)
@@ -88,14 +75,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         appMenu.addItem(NSMenuItem.separator())
 
-        // Quit
         let quit = NSMenuItem(title: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
         appMenu.addItem(quit)
 
         appItem.submenu = appMenu
 
-        // ===== File menu =====
+        // ===== File =====
         let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
         let fileMenu = NSMenu(title: "File")
 
@@ -112,10 +98,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         addFile("Save",           #selector(fileSave(_:)),      "s", [.command])
         addFile("Save As…",       #selector(fileSaveAs(_:)),    "s", [.command, .shift])
         fileMenu.addItem(NSMenuItem.separator())
-        addFile("Print Preview",  #selector(filePrintPreview(_:)))
-        addFile("Page Setup…",    #selector(filePageSetup(_:)))
-        addFile("Print…",         #selector(filePrint(_:)),     "p", [.command])
-        fileMenu.addItem(NSMenuItem.separator())
+        // (Printing removed)
         addFile("Send…",          #selector(fileSend(_:)))
         addFile("Set As Wallpaper (Tiled)",    #selector(fileSetWallpaperTiled(_:)))
         addFile("Set As Wallpaper (Centered)", #selector(fileSetWallpaperCentered(_:)))
@@ -125,19 +108,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         fileItem.submenu = fileMenu
         main.addItem(fileItem)
 
-        // ===== Edit menu (placeholder) =====
+        // Placeholders
         main.addItem(makeEmptyMenu(title: "Edit"))
-
-        // ===== View menu (placeholder) =====
         main.addItem(makeEmptyMenu(title: "View"))
-
-        // ===== Image menu (placeholder) =====
         main.addItem(makeEmptyMenu(title: "Image"))
-
-        // ===== Options menu (placeholder) =====
         main.addItem(makeEmptyMenu(title: "Options"))
-
-        // ===== Help menu (placeholder) =====
         main.addItem(makeEmptyMenu(title: "Help"))
 
         NSApp.mainMenu = main
@@ -154,13 +129,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - File actions
+
     @MainActor
     private func findCanvasView() -> CanvasView? {
-        // Prefer key window first
         if let vc = NSApp.keyWindow?.contentViewController as? ViewController {
             return vc.canvasView
         }
-        // Fallback: search all app windows
         for w in NSApp.windows {
             if let vc = w.contentViewController as? ViewController {
                 return vc.canvasView
@@ -171,28 +145,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     @IBAction func fileSave(_ sender: Any?) {
-        // If we already have a chosen path, save there.
         if let url = currentDocumentURL {
             doSave(to: url)
             return
         }
-        // Otherwise behave like Save As…
         fileSaveAs(sender)
     }
 
     @MainActor
     @IBAction func fileSaveAs(_ sender: Any?) {
-        // 1) Let the user choose a folder (directory only)
+        // Folder chooser
         let panel = NSOpenPanel()
         panel.title = "Choose a Folder"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Choose"
-
         guard panel.runModal() == .OK, let dir = panel.url else { return }
 
-        // 2) Ask for a file name (simple alert + text field)
+        // Name prompt
         let suggested: String = {
             if let current = currentDocumentURL?.deletingPathExtension().lastPathComponent, !current.isEmpty {
                 return current + ".png"
@@ -209,16 +180,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.accessoryView = nameField
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
-
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         var filename = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if filename.isEmpty { filename = suggested }
-        if (filename as NSString).pathExtension.isEmpty { filename += ".png" } // default extension
-
+        if (filename as NSString).pathExtension.isEmpty { filename += ".png" }
         let url = dir.appendingPathComponent(filename)
 
-        // 3) Overwrite confirmation if file exists
+        // Overwrite confirm
         if FileManager.default.fileExists(atPath: url.path) {
             let ow = NSAlert()
             ow.messageText = "Replace existing file?"
@@ -229,14 +198,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard ow.runModal() == .alertFirstButtonReturn else { return }
         }
 
-        // 4) Save and remember the chosen URL so plain “Save” works next time
         currentDocumentURL = url
         doSave(to: url)
     }
     
     @objc func fileNew(_ sender: Any?) {
         currentDocumentURL = nil
-        canvasView()?.clearCanvas()            // resets to blank white, same size
+        canvasView()?.clearCanvas()
     }
 
     @objc func fileOpen(_ sender: Any?) {
@@ -249,7 +217,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard response == .OK, let url = panel.url, let image = NSImage(contentsOf: url) else { return }
             guard let canvas = self?.canvasView() else { return }
 
-            // Replace canvas with opened image (classic Paint behavior)
             canvas.canvasImage = image.copy() as? NSImage
             canvas.canvasRect = NSRect(origin: .zero, size: image.size)
             canvas.updateCanvasSize(to: image.size)
@@ -259,29 +226,53 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc func filePageSetup(_ sender: Any?) {
-        guard let win = NSApp.keyWindow else { return }
-        let layout = NSPageLayout()
-        layout.beginSheet(with: sharedPrintInfo, modalFor: win, delegate: nil, didEnd: nil, contextInfo: nil)
-    }
+    // MARK: - Send (email)
 
-    @objc func filePrint(_ sender: Any?) {
-        guard let canvas = canvasView() else { return }
-        let op = NSPrintOperation(view: canvas, printInfo: sharedPrintInfo)
-        op.showsPrintPanel = true
-        op.showsProgressPanel = true
-        op.run()
-    }
-
-    @objc func filePrintPreview(_ sender: Any?) {
-        // macOS typically previews via the Print panel
-        filePrint(sender)
-    }
-
+    @MainActor
     @objc func fileSend(_ sender: Any?) {
-        NSSound.beep()
-        print("Send… not implemented yet")
+        guard let attachmentURL = exportSnapshotToTemporaryPNG() else {
+            NSSound.beep()
+            print("Send: could not create attachment.")
+            return
+        }
+        guard let service = NSSharingService(named: .composeEmail) else {
+            NSSound.beep()
+            print("Send: Mail compose service unavailable.")
+            return
+        }
+        service.recipients = []
+        service.subject = "Image from Paint95"
+        let body = "Hi,\n\nSharing an image from Paint95.\n\n– Sent from Paint95"
+        let items: [Any] = [body as NSString, attachmentURL as NSURL]
+        if service.canPerform(withItems: items) {
+            service.perform(withItems: items)
+        } else {
+            NSSound.beep()
+            print("Send: Cannot perform share with provided items.")
+        }
     }
+
+    private func exportSnapshotToTemporaryPNG() -> URL? {
+        guard let image = snapshotCanvas() ?? canvasView()?.canvasImage else { return nil }
+        guard
+            let tiff = image.tiffRepresentation,
+            let rep  = NSBitmapImageRep(data: tiff),
+            let data = rep.representation(using: .png, properties: [:])
+        else {
+            return nil
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Paint95-\(UUID().uuidString).png")
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            print("Send: failed to write temp file: \(error)")
+            return nil
+        }
+    }
+
+    // MARK: - Wallpaper
 
     @objc func fileSetWallpaperTiled(_ sender: Any?) {
         guard confirmWallpaperChange() else { return }
@@ -297,118 +288,81 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(sender)
     }
 
-    // MARK: - Wallpaper helpers
-
     private enum WallpaperMode { case tiled, centered }
 
-    /// Pops a blocking Yes/No confirmation before changing the user's desktop
     private func confirmWallpaperChange() -> Bool {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Set as Desktop Wallpaper?"
         alert.informativeText = "This action will update your Desktop Wallpaper. Are you sure?"
-        alert.addButton(withTitle: "Yes") // First button = default/affirmative
+        alert.addButton(withTitle: "Yes")
         alert.addButton(withTitle: "No")
-        let result = alert.runModal()
-        return result == .alertFirstButtonReturn
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
-    /// Generates and applies a wallpaper for each screen according to the requested mode.
     private func setDesktopWallpaper(mode: WallpaperMode) {
         guard let source = snapshotCanvas() else { return }
-
-        // Apply to all connected displays
         for (idx, screen) in NSScreen.screens.enumerated() {
             let screenSize = screen.frame.size
+            let rendered: NSImage = {
+                switch mode {
+                case .tiled:   return imageForScreenTiled(source: source, screenSize: screenSize)
+                case .centered:return imageForScreenCentered(source: source, screenSize: screenSize)
+                }
+            }()
 
-            let rendered: NSImage
-            switch mode {
-            case .tiled:
-                rendered = imageForScreenTiled(source: source, screenSize: screenSize)
-            case .centered:
-                rendered = imageForScreenCentered(source: source, screenSize: screenSize)
-            }
-
-            // Encode to PNG
             guard
                 let tiff = rendered.tiffRepresentation,
                 let rep  = NSBitmapImageRep(data: tiff),
                 let data = rep.representation(using: .png, properties: [:])
             else { continue }
 
-            // Write to a per-screen temp file
             let tempURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("paint95-wallpaper-\(idx).png")
-            do {
-                try data.write(to: tempURL)
-            } catch {
-                NSSound.beep()
-                print("Failed to write temp wallpaper: \(error)")
-                continue
-            }
+            do { try data.write(to: tempURL) } catch { continue }
 
-            // Use no scaling (we already rendered exactly what we want)
             let options: [NSWorkspace.DesktopImageOptionKey: Any] = [
                 .imageScaling: NSNumber(value: NSImageScaling.scaleNone.rawValue),
                 .allowClipping: true
             ]
 
-            do {
-                try NSWorkspace.shared.setDesktopImageURL(tempURL, for: screen, options: options)
-            } catch {
-                NSSound.beep()
-                print("Failed to set wallpaper on screen \(screen): \(error)")
-            }
+            try? NSWorkspace.shared.setDesktopImageURL(tempURL, for: screen, options: options)
         }
     }
 
-    /// Create a screen-sized image composed by tiling the source image.
     private func imageForScreenTiled(source: NSImage, screenSize: NSSize) -> NSImage {
         let out = NSImage(size: screenSize)
         out.lockFocus()
         NSColor.windowBackgroundColor.setFill()
         NSBezierPath(rect: NSRect(origin: .zero, size: screenSize)).fill()
 
-        let tileSize = source.size
-        guard tileSize.width > 0, tileSize.height > 0 else {
-            out.unlockFocus()
-            return out
-        }
+        let tile = source.size
+        guard tile.width > 0, tile.height > 0 else { out.unlockFocus(); return out }
 
         var y: CGFloat = 0
         while y < screenSize.height {
             var x: CGFloat = 0
             while x < screenSize.width {
-                source.draw(in: NSRect(x: x, y: y, width: tileSize.width, height: tileSize.height),
-                            from: .zero,
-                            operation: .sourceOver,
-                            fraction: 1.0)
-                x += tileSize.width
+                source.draw(in: NSRect(x: x, y: y, width: tile.width, height: tile.height),
+                            from: .zero, operation: .sourceOver, fraction: 1.0)
+                x += tile.width
             }
-            y += tileSize.height
+            y += tile.height
         }
-
         out.unlockFocus()
         return out
     }
 
-    /// Create a screen-sized image with the source centered (no scaling).
     private func imageForScreenCentered(source: NSImage, screenSize: NSSize) -> NSImage {
         let out = NSImage(size: screenSize)
         out.lockFocus()
         NSColor.windowBackgroundColor.setFill()
         NSBezierPath(rect: NSRect(origin: .zero, size: screenSize)).fill()
 
-        let imgSize = source.size
-        let origin = NSPoint(
-            x: (screenSize.width  - imgSize.width)  / 2.0,
-            y: (screenSize.height - imgSize.height) / 2.0
-        )
-        source.draw(in: NSRect(origin: origin, size: imgSize),
-                    from: .zero,
-                    operation: .sourceOver,
-                    fraction: 1.0)
-
+        let s = source.size
+        let origin = NSPoint(x: (screenSize.width - s.width)/2.0, y: (screenSize.height - s.height)/2.0)
+        source.draw(in: NSRect(origin: origin, size: s),
+                    from: .zero, operation: .sourceOver, fraction: 1.0)
         out.unlockFocus()
         return out
     }
@@ -416,14 +370,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Save helper
 
     private func doSave(to url: URL) {
-        // Prefer a live snapshot (includes selection overlays etc.),
-        // fall back to the stored canvas image
         guard let image = snapshotCanvas() ?? canvasView()?.canvasImage else { return }
 
         let ext = url.pathExtension.lowercased()
         let fileType: NSBitmapImageRep.FileType
-        let props: [NSBitmapImageRep.PropertyKey: Any] = [:]
-
         switch ext {
         case "png":  fileType = .png
         case "jpg", "jpeg": fileType = .jpeg
@@ -435,7 +385,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard
             let tiff = image.tiffRepresentation,
             let rep  = NSBitmapImageRep(data: tiff),
-            let data = rep.representation(using: fileType, properties: props)
+            let data = rep.representation(using: fileType, properties: [:])
         else {
             NSSound.beep()
             print("Failed to encode image for saving.")
@@ -462,10 +412,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mainViewController()?.canvasView
     }
 
-    /// Snapshot the current canvas rendering
     private func snapshotCanvas() -> NSImage? {
         guard let canvas = canvasView() else { return nil }
-        // Prefer intrinsic size (CanvasView reports canvasRect.size); fallback to bounds
         let size = canvas.intrinsicContentSize == .zero ? canvas.bounds.size : canvas.intrinsicContentSize
         let bounds = NSRect(origin: .zero, size: size)
         guard let rep = canvas.bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
