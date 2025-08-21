@@ -15,6 +15,58 @@ extension Notification.Name {
     static let toolChanged = Notification.Name("PaintToolChangedNotification")
 }
 
+extension CanvasView {
+    /// Resize the canvas to `newSize`, preserving existing pixels anchored at the TOP-LEFT corner.
+    /// Adds white space (right/bottom) when growing; crops from the bottom/right when shrinking.
+    func setCanvasSizeAnchoredTopLeft(to newSize: NSSize) {
+        initializeCanvasIfNeeded()
+
+        guard let image = canvasImage else {
+            // No content yet—just size the canvas
+            updateCanvasSize(to: newSize)
+            needsDisplay = true
+            return
+        }
+
+        let oldSize = image.size
+        let newImage = NSImage(size: newSize)
+
+        // Compute the area that survives (overlap)
+        let drawWidth  = min(oldSize.width,  newSize.width)
+        let drawHeight = min(oldSize.height, newSize.height)
+
+        // For TOP-LEFT anchoring:
+        // - If growing, destination Y is newH - oldH (so tops align).
+        // - If shrinking, we crop from bottom/right, so source Y starts at (oldH - drawH).
+        let sourceY = max(0, oldSize.height - drawHeight)
+        let destY   = max(0, newSize.height - drawHeight)
+
+        let sourceRect = NSRect(x: 0, y: sourceY, width: drawWidth, height: drawHeight)
+        let destRect   = NSRect(x: 0, y: destY,   width: drawWidth, height: drawHeight)
+
+        newImage.lockFocus()
+        // Fill new/extra space with white
+        NSColor.white.setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: newSize)).fill()
+
+        image.draw(
+            in: destRect,
+            from: sourceRect,
+            operation: .copy,
+            fraction: 1.0,
+            respectFlipped: true,
+            hints: [.interpolation: NSImageInterpolation.none]
+        )
+        newImage.unlockFocus()
+
+        // Commit
+        canvasImage = newImage
+        canvasRect.origin = .zero
+        updateCanvasSize(to: newSize)
+        needsDisplay = true
+    }
+}
+
 class CanvasView: NSView {
     
     weak var delegate: CanvasViewDelegate?

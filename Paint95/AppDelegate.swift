@@ -98,7 +98,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         addFile("Save",           #selector(fileSave(_:)),      "s", [.command])
         addFile("Save As…",       #selector(fileSaveAs(_:)),    "s", [.command, .shift])
         fileMenu.addItem(NSMenuItem.separator())
-        // (Printing removed)
         addFile("Send…",          #selector(fileSend(_:)))
         addFile("Set As Wallpaper (Tiled)",    #selector(fileSetWallpaperTiled(_:)))
         addFile("Set As Wallpaper (Centered)", #selector(fileSetWallpaperCentered(_:)))
@@ -108,14 +107,125 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         fileItem.submenu = fileMenu
         main.addItem(fileItem)
 
-        // Placeholders
-        main.addItem(makeEmptyMenu(title: "Edit"))
+        // ===== Edit =====
+        let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        let editMenu = NSMenu(title: "Edit")
+
+        func addEdit(_ title: String, _ sel: Selector?, _ key: String = "", _ mods: NSEvent.ModifierFlags = []) {
+            let item = NSMenuItem(title: title, action: sel, keyEquivalent: key)
+            item.keyEquivalentModifierMask = mods
+            item.target = self
+            editMenu.addItem(item)
+        }
+
+        addEdit("Undo",             #selector(editUndo(_:)),             "z", [.command])
+        addEdit("Repeat",           #selector(editRepeat(_:)),           "y", [.command]) // Redo
+        editMenu.addItem(NSMenuItem.separator())
+        addEdit("Cut",              #selector(editCut(_:)),              "x", [.command])
+        addEdit("Copy",             #selector(editCopy(_:)),             "c", [.command])
+        addEdit("Paste",            #selector(editPaste(_:)),            "v", [.command])
+        addEdit("Clear Selection",  #selector(editClearSelection(_:)),   "\u{8}", []) // Delete
+        editMenu.addItem(NSMenuItem.separator())
+        addEdit("Select All",       #selector(editSelectAll(_:)),        "a", [.command])
+        editMenu.addItem(NSMenuItem.separator())
+        addEdit("Set Canvas Size…", #selector(editSetCanvasSize(_:)))
+        editMenu.addItem(NSMenuItem.separator())
+        addEdit("Copy To…",         #selector(editCopyTo(_:)))
+        addEdit("Paste From…",      #selector(editPasteFrom(_:)))
+
+        // Strip automatic Dictation / Emoji / Substitutions etc.
+        stripAutomaticEditExtras(from: editMenu)
+
+        editItem.submenu = editMenu
+        main.addItem(editItem)
+
+        // ===== Placeholders =====
         main.addItem(makeEmptyMenu(title: "View"))
         main.addItem(makeEmptyMenu(title: "Image"))
         main.addItem(makeEmptyMenu(title: "Options"))
         main.addItem(makeEmptyMenu(title: "Help"))
 
         NSApp.mainMenu = main
+    }
+    
+    @objc func editSetCanvasSize(_ sender: Any?) {
+        guard let canvas = findCanvasView() else { return }
+        let currentSize = canvas.canvasRect.size
+
+        // Build a small form using an alert accessory view
+        let alert = NSAlert()
+        alert.messageText = "Canvas Size:"
+        alert.informativeText = "Enter the new size in pixels."
+        alert.alertStyle = .informational
+
+        // Accessory view with two labeled fields (Width / Height)
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 56))
+
+        let widthLabel  = NSTextField(labelWithString: "Width:")
+        widthLabel.frame = NSRect(x: 0, y: 30, width: 60, height: 22)
+
+        let heightLabel = NSTextField(labelWithString: "Height:")
+        heightLabel.frame = NSRect(x: 0, y: 4, width: 60, height: 22)
+
+        let widthField = NSTextField(string: String(Int(currentSize.width)))
+        widthField.alignment = .right
+        widthField.frame = NSRect(x: 70, y: 28, width: 200, height: 24)
+
+        let heightField = NSTextField(string: String(Int(currentSize.height)))
+        heightField.alignment = .right
+        heightField.frame = NSRect(x: 70, y: 2, width: 200, height: 24)
+
+        container.addSubview(widthLabel)
+        container.addSubview(heightLabel)
+        container.addSubview(widthField)
+        container.addSubview(heightField)
+
+        alert.accessoryView = container
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        // Parse & clamp
+        let w = max(CGFloat(Int(widthField.stringValue) ?? Int(currentSize.width)), 1)
+        let h = max(CGFloat(Int(heightField.stringValue) ?? Int(currentSize.height)), 1)
+
+        // Resize anchored at TOP-LEFT
+        canvas.setCanvasSizeAnchoredTopLeft(to: NSSize(width: w, height: h))
+    }
+
+    /// Remove “Start Dictation…”, “Emoji & Symbols”, and various automatic text-service groups
+    private func stripAutomaticEditExtras(from menu: NSMenu) {
+        let forbiddenSelectors: Set<Selector> = [
+            //#selector(NSApplication.startDictation(_:)),
+            #selector(NSApplication.orderFrontCharacterPalette(_:))
+        ]
+        let forbiddenTitles = Set([
+            "Start Dictation…",
+            "Emoji & Symbols",
+            "Emoji & Symbols…",
+            "Substitutions",
+            "Transformations",
+            "Speech",
+            "Text Replacement",
+            "AutoFill"
+        ])
+
+        // Remove by selector or by title
+        for item in menu.items.reversed() {
+            if let action = item.action, forbiddenSelectors.contains(action) {
+                menu.removeItem(item)
+                continue
+            }
+            if forbiddenTitles.contains(item.title) {
+                menu.removeItem(item)
+                continue
+            }
+            // Also strip submenus with those titles
+            if let submenu = item.submenu, forbiddenTitles.contains(submenu.title) {
+                menu.removeItem(item)
+            }
+        }
     }
 
     private func makeEmptyMenu(title: String) -> NSMenuItem {
@@ -154,7 +264,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     @IBAction func fileSaveAs(_ sender: Any?) {
-        // Folder chooser
+        // Folder chooser (avoids NSSavePanel crash you hit earlier)
         let panel = NSOpenPanel()
         panel.title = "Choose a Folder"
         panel.canChooseFiles = false
@@ -163,7 +273,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.prompt = "Choose"
         guard panel.runModal() == .OK, let dir = panel.url else { return }
 
-        // Name prompt
         let suggested: String = {
             if let current = currentDocumentURL?.deletingPathExtension().lastPathComponent, !current.isEmpty {
                 return current + ".png"
@@ -187,7 +296,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if (filename as NSString).pathExtension.isEmpty { filename += ".png" }
         let url = dir.appendingPathComponent(filename)
 
-        // Overwrite confirm
         if FileManager.default.fileExists(atPath: url.path) {
             let ow = NSAlert()
             ow.messageText = "Replace existing file?"
@@ -201,7 +309,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         currentDocumentURL = url
         doSave(to: url)
     }
-    
+
     @objc func fileNew(_ sender: Any?) {
         currentDocumentURL = nil
         canvasView()?.clearCanvas()
@@ -224,6 +332,156 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             self?.currentDocumentURL = url
         }
+    }
+
+    // MARK: - Edit actions
+
+    @objc func editUndo(_ sender: Any?) {
+        findCanvasView()?.undo()
+    }
+
+    @objc func editRepeat(_ sender: Any?) { // Redo
+        findCanvasView()?.redo()
+    }
+
+    @objc func editCut(_ sender: Any?) {
+        findCanvasView()?.cutSelection()
+    }
+
+    @objc func editCopy(_ sender: Any?) {
+        findCanvasView()?.copySelection()
+    }
+
+    /// Copy To… — Save the current selection to a file (does not modify the canvas)
+    @objc func editCopyTo(_ sender: Any?) {
+        guard let canvas = findCanvasView() else { return }
+
+        // Build an image from the current selection (prefer existing selectedImage)
+        guard let selectionImage = currentSelectionImage(from: canvas) else {
+            NSSound.beep()
+            print("Copy To…: no selection.")
+            return
+        }
+
+        // Choose a folder, then prompt for file name
+        let panel = NSOpenPanel()
+        panel.title = "Choose a Folder"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        guard panel.runModal() == .OK, let dir = panel.url else { return }
+
+        let suggested = "Selection.png"
+        let alert = NSAlert()
+        alert.messageText = "Copy To…"
+        alert.informativeText = "Enter a file name for the selection:"
+        let nameField = NSTextField(string: suggested)
+        nameField.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
+        alert.accessoryView = nameField
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        var filename = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if filename.isEmpty { filename = suggested }
+        if (filename as NSString).pathExtension.isEmpty { filename += ".png" }
+        let url = dir.appendingPathComponent(filename)
+
+        if FileManager.default.fileExists(atPath: url.path) {
+            let ow = NSAlert()
+            ow.messageText = "Replace existing file?"
+            ow.informativeText = "A file named “\(filename)” already exists in this location."
+            ow.alertStyle = .warning
+            ow.addButton(withTitle: "Replace")
+            ow.addButton(withTitle: "Cancel")
+            guard ow.runModal() == .alertFirstButtonReturn else { return }
+        }
+
+        // Encode (default PNG)
+        guard
+            let tiff = selectionImage.tiffRepresentation,
+            let rep  = NSBitmapImageRep(data: tiff),
+            let data = rep.representation(using: .png, properties: [:])
+        else {
+            NSSound.beep()
+            print("Copy To…: failed to encode selection.")
+            return
+        }
+        do {
+            try data.write(to: url)
+            print("Copy To…: saved selection to \(url.path)")
+        } catch {
+            NSSound.beep()
+            print("Copy To…: save error \(error)")
+        }
+    }
+
+    /// Paste From… — Choose an image file and paste it as a floating selection
+    @objc func editPasteFrom(_ sender: Any?) {
+        guard let canvas = findCanvasView() else { return }
+
+        let panel = NSOpenPanel()
+        panel.title = "Paste From…"
+        panel.allowedFileTypes = ["png","jpg","jpeg","bmp","tiff","gif","heic"]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+
+        panel.begin { response in
+            guard response == .OK, let url = panel.url, let image = NSImage(contentsOf: url) else { return }
+
+            // Put the image on the pasteboard, then reuse CanvasView.pasteImage()
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.writeObjects([image])
+
+            canvas.pasteImage()
+        }
+    }
+
+    @objc func editPaste(_ sender: Any?) {
+        findCanvasView()?.pasteImage()
+    }
+
+    @objc func editClearSelection(_ sender: Any?) {
+        findCanvasView()?.deleteSelectionOrPastedImage()
+    }
+
+    @objc func editSelectAll(_ sender: Any?) {
+        if let canvas = findCanvasView() {
+            // Reuse same behavior as ⌘A in your CanvasView
+            canvas.performKeyEquivalent(with: makeCommandEvent(char: "a"))
+        }
+    }
+
+    private func makeCommandEvent(char: String) -> NSEvent {
+        return NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: char,
+            charactersIgnoringModifiers: char,
+            isARepeat: false,
+            keyCode: 0
+        )!
+    }
+
+    /// Extract the current selection as an image (selectedImage if present, else render selectionRect)
+    private func currentSelectionImage(from canvas: CanvasView) -> NSImage? {
+        if let img = canvas.selectedImage {
+            return img
+        }
+        if let rect = canvas.selectionRect, let base = canvas.canvasImage {
+            let image = NSImage(size: rect.size)
+            image.lockFocus()
+            base.draw(at: .zero, from: rect, operation: .copy, fraction: 1.0)
+            image.unlockFocus()
+            return image
+        }
+        return nil
     }
 
     // MARK: - Send (email)
