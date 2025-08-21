@@ -171,13 +171,67 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     @IBAction func fileSave(_ sender: Any?) {
-        guard let canvas = findCanvasView() else {
-            NSSound.beep()
-            print("Save: CanvasView not found.")
+        // If we already have a chosen path, save there.
+        if let url = currentDocumentURL {
+            doSave(to: url)
             return
         }
-        print("Saving!")
-        canvas.saveCanvasToDefaultLocation()
+        // Otherwise behave like Save As…
+        fileSaveAs(sender)
+    }
+
+    @MainActor
+    @IBAction func fileSaveAs(_ sender: Any?) {
+        // 1) Let the user choose a folder (directory only)
+        let panel = NSOpenPanel()
+        panel.title = "Choose a Folder"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+
+        guard panel.runModal() == .OK, let dir = panel.url else { return }
+
+        // 2) Ask for a file name (simple alert + text field)
+        let suggested: String = {
+            if let current = currentDocumentURL?.deletingPathExtension().lastPathComponent, !current.isEmpty {
+                return current + ".png"
+            } else {
+                return "Untitled.png"
+            }
+        }()
+
+        let alert = NSAlert()
+        alert.messageText = "Save As"
+        alert.informativeText = "Enter a file name:"
+        let nameField = NSTextField(string: suggested)
+        nameField.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
+        alert.accessoryView = nameField
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        var filename = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if filename.isEmpty { filename = suggested }
+        if (filename as NSString).pathExtension.isEmpty { filename += ".png" } // default extension
+
+        let url = dir.appendingPathComponent(filename)
+
+        // 3) Overwrite confirmation if file exists
+        if FileManager.default.fileExists(atPath: url.path) {
+            let ow = NSAlert()
+            ow.messageText = "Replace existing file?"
+            ow.informativeText = "A file named “\(filename)” already exists in this location."
+            ow.alertStyle = .warning
+            ow.addButton(withTitle: "Replace")
+            ow.addButton(withTitle: "Cancel")
+            guard ow.runModal() == .alertFirstButtonReturn else { return }
+        }
+
+        // 4) Save and remember the chosen URL so plain “Save” works next time
+        currentDocumentURL = url
+        doSave(to: url)
     }
     
     @objc func fileNew(_ sender: Any?) {
@@ -203,11 +257,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             self?.currentDocumentURL = url
         }
-    }
-    
-    @MainActor
-    @IBAction func fileSaveAs(_ sender: Any?) {
-        fileSave(sender) // temporary: same behavior as Save
     }
 
     @objc func filePageSetup(_ sender: Any?) {
@@ -235,17 +284,133 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func fileSetWallpaperTiled(_ sender: Any?) {
-        NSSound.beep()
-        print("Set As Wallpaper (Tiled) not implemented yet")
+        guard confirmWallpaperChange() else { return }
+        setDesktopWallpaper(mode: .tiled)
     }
 
     @objc func fileSetWallpaperCentered(_ sender: Any?) {
-        NSSound.beep()
-        print("Set As Wallpaper (Centered) not implemented yet")
+        guard confirmWallpaperChange() else { return }
+        setDesktopWallpaper(mode: .centered)
     }
 
     @objc func fileExit(_ sender: Any?) {
         NSApp.terminate(sender)
+    }
+
+    // MARK: - Wallpaper helpers
+
+    private enum WallpaperMode { case tiled, centered }
+
+    /// Pops a blocking Yes/No confirmation before changing the user's desktop
+    private func confirmWallpaperChange() -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Set as Desktop Wallpaper?"
+        alert.informativeText = "This action will update your Desktop Wallpaper. Are you sure?"
+        alert.addButton(withTitle: "Yes") // First button = default/affirmative
+        alert.addButton(withTitle: "No")
+        let result = alert.runModal()
+        return result == .alertFirstButtonReturn
+    }
+
+    /// Generates and applies a wallpaper for each screen according to the requested mode.
+    private func setDesktopWallpaper(mode: WallpaperMode) {
+        guard let source = snapshotCanvas() else { return }
+
+        // Apply to all connected displays
+        for (idx, screen) in NSScreen.screens.enumerated() {
+            let screenSize = screen.frame.size
+
+            let rendered: NSImage
+            switch mode {
+            case .tiled:
+                rendered = imageForScreenTiled(source: source, screenSize: screenSize)
+            case .centered:
+                rendered = imageForScreenCentered(source: source, screenSize: screenSize)
+            }
+
+            // Encode to PNG
+            guard
+                let tiff = rendered.tiffRepresentation,
+                let rep  = NSBitmapImageRep(data: tiff),
+                let data = rep.representation(using: .png, properties: [:])
+            else { continue }
+
+            // Write to a per-screen temp file
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("paint95-wallpaper-\(idx).png")
+            do {
+                try data.write(to: tempURL)
+            } catch {
+                NSSound.beep()
+                print("Failed to write temp wallpaper: \(error)")
+                continue
+            }
+
+            // Use no scaling (we already rendered exactly what we want)
+            let options: [NSWorkspace.DesktopImageOptionKey: Any] = [
+                .imageScaling: NSNumber(value: NSImageScaling.scaleNone.rawValue),
+                .allowClipping: true
+            ]
+
+            do {
+                try NSWorkspace.shared.setDesktopImageURL(tempURL, for: screen, options: options)
+            } catch {
+                NSSound.beep()
+                print("Failed to set wallpaper on screen \(screen): \(error)")
+            }
+        }
+    }
+
+    /// Create a screen-sized image composed by tiling the source image.
+    private func imageForScreenTiled(source: NSImage, screenSize: NSSize) -> NSImage {
+        let out = NSImage(size: screenSize)
+        out.lockFocus()
+        NSColor.windowBackgroundColor.setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: screenSize)).fill()
+
+        let tileSize = source.size
+        guard tileSize.width > 0, tileSize.height > 0 else {
+            out.unlockFocus()
+            return out
+        }
+
+        var y: CGFloat = 0
+        while y < screenSize.height {
+            var x: CGFloat = 0
+            while x < screenSize.width {
+                source.draw(in: NSRect(x: x, y: y, width: tileSize.width, height: tileSize.height),
+                            from: .zero,
+                            operation: .sourceOver,
+                            fraction: 1.0)
+                x += tileSize.width
+            }
+            y += tileSize.height
+        }
+
+        out.unlockFocus()
+        return out
+    }
+
+    /// Create a screen-sized image with the source centered (no scaling).
+    private func imageForScreenCentered(source: NSImage, screenSize: NSSize) -> NSImage {
+        let out = NSImage(size: screenSize)
+        out.lockFocus()
+        NSColor.windowBackgroundColor.setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: screenSize)).fill()
+
+        let imgSize = source.size
+        let origin = NSPoint(
+            x: (screenSize.width  - imgSize.width)  / 2.0,
+            y: (screenSize.height - imgSize.height) / 2.0
+        )
+        source.draw(in: NSRect(origin: origin, size: imgSize),
+                    from: .zero,
+                    operation: .sourceOver,
+                    fraction: 1.0)
+
+        out.unlockFocus()
+        return out
     }
 
     // MARK: - Save helper
@@ -310,4 +475,3 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return image
     }
 }
-
