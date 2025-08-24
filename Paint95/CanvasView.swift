@@ -2,6 +2,7 @@ import Cocoa
 
 protocol CanvasViewDelegate: AnyObject {
     func didPickColour(_ colour: NSColor)
+    func canvasStatusDidChange(cursor: NSPoint, selectionSize: NSSize?)
 }
 
 extension CanvasView: NSTextViewDelegate {
@@ -72,7 +73,7 @@ class CanvasView: NSView {
     weak var delegate: CanvasViewDelegate?
     private var colourWindowController: ColourSelectionWindowController?
     
-    var currentTool: PaintTool = .pencil
+    //var currentTool: PaintTool = .pencil
     var currentColour: NSColor {
         get { primaryColour }
         set { primaryColour = newValue }
@@ -168,8 +169,21 @@ class CanvasView: NSView {
     //Zoom
     var isZoomed: Bool = false
     var zoomRect: NSRect = .zero
-    var zoomPreviewRect: NSRect = .zero
+    //var zoomPreviewRect: NSRect = .zero
     var mousePosition: NSPoint = .zero
+    
+    // MARK: Zoom preview
+    private var zoomPreviewRect: NSRect? {
+        didSet { needsDisplay = true }
+    }
+
+    var currentTool: PaintTool = .pencil {
+        didSet {
+            if currentTool != .zoom {
+                zoomPreviewRect = nil   // clear preview when leaving Zoom
+            }
+        }
+    }
     
     //spray paint
     var sprayTimer: Timer?
@@ -195,31 +209,16 @@ class CanvasView: NSView {
         needsDisplay = true
     }
     
-    func saveCanvasToDefaultLocation() {
-        guard let canvasImage = canvasImage else {
-            return
+    private func emitStatusUpdate(cursor: NSPoint) {
+        let selSize: NSSize?
+        if let img = selectedImage, let _ = selectedImageOrigin {
+            selSize = img.size
+        } else if let rect = selectionRect {
+            selSize = rect.size
+        } else {
+            selSize = nil
         }
-
-        // Create file path
-        let path = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("out.jpg")
-            //.appendingPathComponent("Documents/Jeffrey/projects/PaintProgram/out.jpg")
-
-        print("path:", path.absoluteString)
-        // Convert NSImage to JPEG data
-        guard let tiffData = canvasImage.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiffData),
-              let jpegData = bitmap.representation(using: .jpeg, properties: [:]) else {
-            return
-        }
-
-        do {
-            try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try jpegData.write(to: path)
-            print("Saved!")
-        } catch {
-            print("Save failed: \(error)")
-        }
+        delegate?.canvasStatusDidChange(cursor: cursor, selectionSize: selSize)
     }
     
     func colourSelectedFromPalette(_ colour: NSColor) {
@@ -359,9 +358,11 @@ class CanvasView: NSView {
             canvasImage?.draw(in: canvasRect)
             if currentTool == .zoom {
                 NSColor.black.setStroke()
-                let path = NSBezierPath(rect: zoomPreviewRect)
-                path.lineWidth = 1
-                path.stroke()  // now solid line, no dashes
+                if let zoomRect = zoomPreviewRect {
+                    let path = NSBezierPath(rect: zoomRect)
+                    path.lineWidth = 1
+                    path.stroke()  // now solid line, no dashes
+                }
             }
         }
 
@@ -497,9 +498,16 @@ class CanvasView: NSView {
             let rect = NSRect(x: position.x, y: position.y, width: handleSize, height: handleSize)
             NSBezierPath(rect: rect).fill()
         }
+        
+        if currentTool == .zoom, let r = zoomPreviewRect {
+            NSColor.keyboardFocusIndicatorColor.setStroke()
+            NSBezierPath(rect: r).setLineDash([4,4], count: 2, phase: 0)
+            NSBezierPath(rect: r).stroke()
+        }
     }
     
     override func mouseDown(with event: NSEvent) {
+        zoomPreviewRect = nil
         if let tv = textView {
             if tv.window?.firstResponder == tv {
                 commitTextView(tv)
@@ -510,6 +518,7 @@ class CanvasView: NSView {
             }
         }
         let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
+        emitStatusUpdate(cursor: point)
 
         // === Selection handle detection (resize) ===
         if let rect = selectionRect ?? (selectedImage != nil ? NSRect(origin: selectedImageOrigin ?? .zero, size: selectedImage!.size) : nil) {
@@ -649,6 +658,7 @@ class CanvasView: NSView {
     override func mouseDragged(with event: NSEvent) {
         let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
         let shiftPressed = event.modifierFlags.contains(.shift)
+        emitStatusUpdate(cursor: point)
         
         // === Selection resizing (reuse for pasted content; non-destructive while pasting) ===
         if isResizingSelection, let handle = activeSelectionHandle {
@@ -841,7 +851,7 @@ class CanvasView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        
+        if currentTool != .zoom { zoomPreviewRect = nil }
         if isResizingCanvas {
             isResizingCanvas = false
             activeResizeHandle = nil
@@ -871,6 +881,7 @@ class CanvasView: NSView {
 
         let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
         let shiftPressed = event.modifierFlags.contains(.shift)
+        emitStatusUpdate(cursor: point)
 
         if let image = selectedImage, let io = selectedImageOrigin {
             let rect = NSRect(origin: io, size: image.size)
@@ -1031,9 +1042,15 @@ class CanvasView: NSView {
     
     override func mouseMoved(with event: NSEvent) {
         super.mouseMoved(with: event)
+        
+        guard currentTool == .zoom else { return }
+            let p = convert(event.locationInWindow, from: nil)
+            let box: CGFloat = 64
+            zoomPreviewRect = NSRect(x: p.x - box/2, y: p.y - box/2, width: box, height: box)
 
         let point = convert(event.locationInWindow, from: nil)
-
+        emitStatusUpdate(cursor: convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil)))
+        
         if currentTool == .zoom {
             let zoomSize: CGFloat = 100
             zoomPreviewRect = NSRect(
@@ -1047,13 +1064,17 @@ class CanvasView: NSView {
         window?.invalidateCursorRects(for: self)
     }
     
+    override func mouseExited(with event: NSEvent) {
+        zoomPreviewRect = nil
+    }
+    
     override func keyDown(with event: NSEvent) {
         guard event.type == .keyDown else { return }
         if event.modifierFlags.contains(.command) {
             if let chars = event.charactersIgnoringModifiers?.lowercased() {
                 switch chars {
-                case "s":
-                    saveCanvasToDefaultLocation()
+                //case "s":
+                    //saveCanvasToDefaultLocation()
                 default:
                     break
                 }
@@ -1908,7 +1929,6 @@ class CanvasView: NSView {
     }
     
     @objc public func moveSelectionBy(dx: CGFloat, dy: CGFloat) {
-        
         if selectedImage != nil, let image = selectedImage {
             if !hasMovedSelection {
                 // Clear original area on first move
@@ -1926,7 +1946,7 @@ class CanvasView: NSView {
             }
             needsDisplay = true
         }
-        
+
         if isPastingActive, let origin = pastedImageOrigin {
             pastedImageOrigin = NSPoint(x: origin.x + dx, y: origin.y + dy)
             needsDisplay = true
@@ -1937,6 +1957,9 @@ class CanvasView: NSView {
             }
             needsDisplay = true
         }
+
+        // NEW: notify delegate about status update
+        emitStatusUpdate(cursor: mousePosition)  // assuming you track mousePosition already
     }
     
     // Make the scroll view ask for our size when needed

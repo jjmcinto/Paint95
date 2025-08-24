@@ -1,6 +1,12 @@
 // AppDelegate.swift
 import Cocoa
 
+private extension NSView {
+    var descendants: [NSView] {
+        subviews.flatMap { [$0] + $0.descendants }
+    }
+}
+
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
 
@@ -20,22 +26,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Create the main window
         let frame = NSRect(x: 200, y: 200, width: 1000, height: 700)
-        window = NSWindow(
-            contentRect: frame,
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window?.title = "Paint95"
+        let win = NSWindow(contentRect: frame,
+                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                           backing: .buffered,
+                           defer: false)
+        win.title = "Paint95"
+        self.window = win
 
-        // Load storyboard VC
+        // sensible starting content size + free resizing
+        window?.setContentSize(NSSize(width: 1100, height: 750))
+        window?.styleMask.insert(.resizable)
+        window?.contentMinSize = NSSize(width: 700, height: 500)
+        window?.contentMaxSize = NSSize(width: 12000, height: 9000)
+        window?.resizeIncrements = NSSize(width: 1, height: 1)
+        window?.isRestorable = true
+        window?.setFrameAutosaveName("Paint95MainWindow")
+
+        // Load the storyboard VC
         let storyboard = NSStoryboard(name: "Main", bundle: nil)
-        let rootVC = storyboard.instantiateInitialController() as? NSViewController
-            ?? ViewController()
+        guard let vc = (storyboard.instantiateInitialController() as? ViewController)
+            ?? (storyboard.instantiateController(withIdentifier: "ViewController") as? ViewController) else {
+            fatalError("Couldn’t load ViewController from Main.storyboard")
+        }
 
-        window?.contentViewController = rootVC
-        window?.center()
-        window?.makeKeyAndOrderFront(nil)
+        win.contentViewController = vc
+        win.center()
+        win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -139,199 +155,154 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         editItem.submenu = editMenu
         main.addItem(editItem)
 
+        // ===== View =====
+        let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+        let viewMenu = NSMenu(title: "View")
+
+        func addView(_ title: String, _ sel: Selector?, _ key: String = "", _ mods: NSEvent.ModifierFlags = []) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: sel, keyEquivalent: key)
+            item.keyEquivalentModifierMask = mods
+            item.target = self
+            viewMenu.addItem(item)
+            return item
+        }
+
+        let mToolBox   = addView("Tool Box",   #selector(viewToggleToolBox(_:)))
+        let mColourBox = addView("Colour Box", #selector(viewToggleColorBox(_:)))
+        let mStatusBar = addView("Status Bar", #selector(viewToggleStatusBar(_:)))
+        viewMenu.addItem(NSMenuItem.separator())
+        addView("Zoom (activate tool)", #selector(viewActivateZoomTool(_:)))
+        viewMenu.addItem(NSMenuItem.separator())
+        addView("Normal Size", #selector(viewNormalSize(_:)))
+        addView("Large Size",  #selector(viewLargeSize(_:)))
+        addView("Custom…",     #selector(viewCustomZoom(_:)))
+        viewMenu.addItem(NSMenuItem.separator())
+        addView("View Bitmap…", #selector(viewBitmap(_:)))
+
+        // Initialize checkmarks from current UI state
+        if let vc = vc() {
+            mToolBox.state   = vc.isToolBoxVisible ? .on : .off
+            mColourBox.state = vc.isColorBoxVisible ? .on : .off
+            let statusHidden = (self.viewWithID("StatusBar")?.isHidden ?? false)
+            mStatusBar.state = statusHidden ? .off : .on
+        } else {
+            mToolBox.state = .on
+            mColourBox.state = .on
+            mStatusBar.state = .on
+        }
+
+        viewItem.submenu = viewMenu
+        main.addItem(viewItem)
+
         // ===== Placeholders =====
-        main.addItem(makeEmptyMenu(title: "View"))
         main.addItem(makeEmptyMenu(title: "Image"))
         main.addItem(makeEmptyMenu(title: "Options"))
         main.addItem(makeEmptyMenu(title: "Help"))
 
         NSApp.mainMenu = main
     }
-    
-    @objc func editSetCanvasSize(_ sender: Any?) {
-        guard let canvas = findCanvasView() else { return }
-        let currentSize = canvas.canvasRect.size
 
-        // Build a small form using an alert accessory view
+    private func vc() -> ViewController? {
+        if let v = NSApp.keyWindow?.contentViewController as? ViewController { return v }
+        return NSApp.windows.compactMap { $0.contentViewController as? ViewController }.first
+    }
+
+    private func canvasScrollView() -> NSScrollView? {
+        // CanvasView -> NSClipView -> NSScrollView
+        guard let clip = vc()?.canvasView.superview as? NSClipView else { return nil }
+        return clip.superview as? NSScrollView
+    }
+
+    private func viewWithID(_ id: String) -> NSView? {
+        guard let root = vc()?.view else { return nil }
+        return root.descendants.first { $0.identifier?.rawValue == id }
+    }
+
+    private func setHidden(_ hidden: Bool, id: String) {
+        viewWithID(id)?.isHidden = hidden
+    }
+
+    // MARK: View menu actions
+
+    @objc private func viewToggleToolBox(_ sender: NSMenuItem) {
+        guard let vc = vc() else { return }
+        let newVisible = !vc.isToolBoxVisible
+        vc.setToolBoxVisible(newVisible)
+        sender.state = newVisible ? .on : .off
+    }
+
+    @objc private func viewToggleColorBox(_ sender: NSMenuItem) {
+        guard let vc = vc() else { return }
+        let newVisible = !vc.isColorBoxVisible
+        vc.setColorBoxVisible(newVisible)
+        sender.state = newVisible ? .on : .off
+    }
+
+    @objc private func viewToggleStatusBar(_ sender: NSMenuItem) {
+        let willHide = sender.state == .on
+        setHidden(willHide, id: "StatusBar")
+        sender.state = willHide ? .off : .on
+    }
+
+    @objc private func viewActivateZoomTool(_ sender: Any?) {
+        guard let c = vc()?.canvasView else { return }
+        c.currentTool = .zoom
+        NotificationCenter.default.post(name: .toolChanged, object: PaintTool.zoom)
+    }
+
+    @objc private func viewNormalSize(_ sender: Any?) {
+        guard let scroll = canvasScrollView() else { return }
+        scroll.magnification = 1.0
+    }
+
+    @objc private func viewLargeSize(_ sender: Any?) {
+        guard let scroll = canvasScrollView() else { return }
+        scroll.magnification = 2.0
+    }
+
+    @objc private func viewCustomZoom(_ sender: Any?) {
+        guard let scroll = canvasScrollView() else { return }
         let alert = NSAlert()
-        alert.messageText = "Canvas Size:"
-        alert.informativeText = "Enter the new size in pixels."
-        alert.alertStyle = .informational
-
-        // Accessory view with two labeled fields (Width / Height)
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 56))
-
-        let widthLabel  = NSTextField(labelWithString: "Width:")
-        widthLabel.frame = NSRect(x: 0, y: 30, width: 60, height: 22)
-
-        let heightLabel = NSTextField(labelWithString: "Height:")
-        heightLabel.frame = NSRect(x: 0, y: 4, width: 60, height: 22)
-
-        let widthField = NSTextField(string: String(Int(currentSize.width)))
-        widthField.alignment = .right
-        widthField.frame = NSRect(x: 70, y: 28, width: 200, height: 24)
-
-        let heightField = NSTextField(string: String(Int(currentSize.height)))
-        heightField.alignment = .right
-        heightField.frame = NSRect(x: 70, y: 2, width: 200, height: 24)
-
-        container.addSubview(widthLabel)
-        container.addSubview(heightLabel)
-        container.addSubview(widthField)
-        container.addSubview(heightField)
-
-        alert.accessoryView = container
+        alert.messageText = "Custom Zoom"
+        alert.informativeText = "Enter zoom percentage (e.g., 150 for 150%)."
+        let field = NSTextField(string: "\(Int(scroll.magnification * 100))")
+        field.frame = NSRect(x: 0, y: 0, width: 120, height: 22)
+        alert.accessoryView = field
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: "Cancel")
-
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        // Parse & clamp
-        let w = max(CGFloat(Int(widthField.stringValue) ?? Int(currentSize.width)), 1)
-        let h = max(CGFloat(Int(heightField.stringValue) ?? Int(currentSize.height)), 1)
-
-        // Resize anchored at TOP-LEFT
-        canvas.setCanvasSizeAnchoredTopLeft(to: NSSize(width: w, height: h))
+        let pct = max(10, min(800, Int(field.stringValue) ?? 100))
+        scroll.magnification = CGFloat(pct) / 100.0
     }
 
-    /// Remove “Start Dictation…”, “Emoji & Symbols”, and various automatic text-service groups
-    private func stripAutomaticEditExtras(from menu: NSMenu) {
-        let forbiddenSelectors: Set<Selector> = [
-            //#selector(NSApplication.startDictation(_:)),
-            #selector(NSApplication.orderFrontCharacterPalette(_:))
-        ]
-        let forbiddenTitles = Set([
-            "Start Dictation…",
-            "Emoji & Symbols",
-            "Emoji & Symbols…",
-            "Substitutions",
-            "Transformations",
-            "Speech",
-            "Text Replacement",
-            "AutoFill"
-        ])
+    @objc private func viewBitmap(_ sender: Any?) {
+        guard let image = snapshotCanvas() else { return }
 
-        // Remove by selector or by title
-        for item in menu.items.reversed() {
-            if let action = item.action, forbiddenSelectors.contains(action) {
-                menu.removeItem(item)
-                continue
-            }
-            if forbiddenTitles.contains(item.title) {
-                menu.removeItem(item)
-                continue
-            }
-            // Also strip submenus with those titles
-            if let submenu = item.submenu, forbiddenTitles.contains(submenu.title) {
-                menu.removeItem(item)
-            }
-        }
-    }
+        let imageView = NSImageView()
+        imageView.image = image
+        imageView.imageScaling = .scaleNone
+        imageView.translatesAutoresizingMaskIntoConstraints = true
+        imageView.frame = NSRect(origin: .zero, size: image.size)
 
-    private func makeEmptyMenu(title: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        let menu = NSMenu(title: title)
-        let empty = NSMenuItem(title: "<empty>", action: nil, keyEquivalent: "")
-        empty.isEnabled = false
-        menu.addItem(empty)
-        item.submenu = menu
-        return item
-    }
+        let sv = NSScrollView()
+        sv.hasVerticalScroller = true
+        sv.hasHorizontalScroller = true
+        sv.borderType = .bezelBorder
+        sv.documentView = imageView
+        sv.allowsMagnification = true
+        sv.minMagnification = 0.25
+        sv.maxMagnification = 8.0
 
-    // MARK: - File actions
-
-    @MainActor
-    private func findCanvasView() -> CanvasView? {
-        if let vc = NSApp.keyWindow?.contentViewController as? ViewController {
-            return vc.canvasView
-        }
-        for w in NSApp.windows {
-            if let vc = w.contentViewController as? ViewController {
-                return vc.canvasView
-            }
-        }
-        return nil
-    }
-
-    @MainActor
-    @IBAction func fileSave(_ sender: Any?) {
-        if let url = currentDocumentURL {
-            doSave(to: url)
-            return
-        }
-        fileSaveAs(sender)
-    }
-
-    @MainActor
-    @IBAction func fileSaveAs(_ sender: Any?) {
-        // Folder chooser (avoids NSSavePanel crash you hit earlier)
-        let panel = NSOpenPanel()
-        panel.title = "Choose a Folder"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
-        guard panel.runModal() == .OK, let dir = panel.url else { return }
-
-        let suggested: String = {
-            if let current = currentDocumentURL?.deletingPathExtension().lastPathComponent, !current.isEmpty {
-                return current + ".png"
-            } else {
-                return "Untitled.png"
-            }
-        }()
-
-        let alert = NSAlert()
-        alert.messageText = "Save As"
-        alert.informativeText = "Enter a file name:"
-        let nameField = NSTextField(string: suggested)
-        nameField.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
-        alert.accessoryView = nameField
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        var filename = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if filename.isEmpty { filename = suggested }
-        if (filename as NSString).pathExtension.isEmpty { filename += ".png" }
-        let url = dir.appendingPathComponent(filename)
-
-        if FileManager.default.fileExists(atPath: url.path) {
-            let ow = NSAlert()
-            ow.messageText = "Replace existing file?"
-            ow.informativeText = "A file named “\(filename)” already exists in this location."
-            ow.alertStyle = .warning
-            ow.addButton(withTitle: "Replace")
-            ow.addButton(withTitle: "Cancel")
-            guard ow.runModal() == .alertFirstButtonReturn else { return }
-        }
-
-        currentDocumentURL = url
-        doSave(to: url)
-    }
-
-    @objc func fileNew(_ sender: Any?) {
-        currentDocumentURL = nil
-        canvasView()?.clearCanvas()
-    }
-
-    @objc func fileOpen(_ sender: Any?) {
-        let panel = NSOpenPanel()
-        panel.title = "Open Image"
-        panel.allowedFileTypes = ["png","jpg","jpeg","bmp","tiff","gif","heic"]
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.begin { [weak self] response in
-            guard response == .OK, let url = panel.url, let image = NSImage(contentsOf: url) else { return }
-            guard let canvas = self?.canvasView() else { return }
-
-            canvas.canvasImage = image.copy() as? NSImage
-            canvas.canvasRect = NSRect(origin: .zero, size: image.size)
-            canvas.updateCanvasSize(to: image.size)
-            canvas.needsDisplay = true
-
-            self?.currentDocumentURL = url
-        }
+        let w = NSWindow(
+            contentRect: NSRect(x: 340, y: 340, width: 800, height: 600),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered, defer: false
+        )
+        w.title = "Bitmap (1:1)"
+        w.contentView = sv
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     // MARK: - Edit actions
@@ -454,34 +425,187 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func makeCommandEvent(char: String) -> NSEvent {
-        return NSEvent.keyEvent(
-            with: .keyDown,
-            location: .zero,
-            modifierFlags: [.command],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            characters: char,
-            charactersIgnoringModifiers: char,
-            isARepeat: false,
-            keyCode: 0
-        )!
+    @objc func editSetCanvasSize(_ sender: Any?) {
+        guard let canvas = findCanvasView() else { return }
+        let currentSize = canvas.canvasRect.size
+
+        // Build a small form using an alert accessory view
+        let alert = NSAlert()
+        alert.messageText = "Canvas Size:"
+        alert.informativeText = "Enter the new size in pixels."
+        alert.alertStyle = .informational
+
+        // Accessory view with two labeled fields (Width / Height)
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 56))
+
+        let widthLabel  = NSTextField(labelWithString: "Width:")
+        widthLabel.frame = NSRect(x: 0, y: 30, width: 60, height: 22)
+
+        let heightLabel = NSTextField(labelWithString: "Height:")
+        heightLabel.frame = NSRect(x: 0, y: 4, width: 60, height: 22)
+
+        let widthField = NSTextField(string: String(Int(currentSize.width)))
+        widthField.alignment = .right
+        widthField.frame = NSRect(x: 70, y: 28, width: 200, height: 24)
+
+        let heightField = NSTextField(string: String(Int(currentSize.height)))
+        heightField.alignment = .right
+        heightField.frame = NSRect(x: 70, y: 2, width: 200, height: 24)
+
+        container.addSubview(widthLabel)
+        container.addSubview(heightLabel)
+        container.addSubview(widthField)
+        container.addSubview(heightField)
+
+        alert.accessoryView = container
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        // Parse & clamp
+        let w = max(CGFloat(Int(widthField.stringValue) ?? Int(currentSize.width)), 1)
+        let h = max(CGFloat(Int(heightField.stringValue) ?? Int(currentSize.height)), 1)
+
+        // Resize anchored at TOP-LEFT
+        canvas.setCanvasSizeAnchoredTopLeft(to: NSSize(width: w, height: h))
     }
 
-    /// Extract the current selection as an image (selectedImage if present, else render selectionRect)
-    private func currentSelectionImage(from canvas: CanvasView) -> NSImage? {
-        if let img = canvas.selectedImage {
-            return img
+    /// Remove “Start Dictation…”, “Emoji & Symbols”, and various automatic text-service groups
+    private func stripAutomaticEditExtras(from menu: NSMenu) {
+        let forbiddenSelectors: Set<Selector> = [
+            #selector(NSApplication.orderFrontCharacterPalette(_:))
+        ]
+        let forbiddenTitles = Set([
+            "Start Dictation…",
+            "Emoji & Symbols",
+            "Emoji & Symbols…",
+            "Substitutions",
+            "Transformations",
+            "Speech",
+            "Text Replacement",
+            "AutoFill"
+        ])
+
+        for item in menu.items.reversed() {
+            if let action = item.action, forbiddenSelectors.contains(action) {
+                menu.removeItem(item)
+                continue
+            }
+            if forbiddenTitles.contains(item.title) {
+                menu.removeItem(item)
+                continue
+            }
+            if let submenu = item.submenu, forbiddenTitles.contains(submenu.title) {
+                menu.removeItem(item)
+            }
         }
-        if let rect = canvas.selectionRect, let base = canvas.canvasImage {
-            let image = NSImage(size: rect.size)
-            image.lockFocus()
-            base.draw(at: .zero, from: rect, operation: .copy, fraction: 1.0)
-            image.unlockFocus()
-            return image
+    }
+
+    private func makeEmptyMenu(title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let menu = NSMenu(title: title)
+        let empty = NSMenuItem(title: "<empty>", action: nil, keyEquivalent: "")
+        empty.isEnabled = false
+        menu.addItem(empty)
+        item.submenu = menu
+        return item
+    }
+
+    // MARK: - File actions
+
+    @MainActor
+    private func findCanvasView() -> CanvasView? {
+        if let vc = NSApp.keyWindow?.contentViewController as? ViewController {
+            return vc.canvasView
+        }
+        for w in NSApp.windows {
+            if let vc = w.contentViewController as? ViewController {
+                return vc.canvasView
+            }
         }
         return nil
+    }
+
+    @MainActor
+    @IBAction func fileSave(_ sender: Any?) {
+        if let url = currentDocumentURL {
+            doSave(to: url)
+            return
+        }
+        fileSaveAs(sender)
+    }
+
+    @MainActor
+    @IBAction func fileSaveAs(_ sender: Any?) {
+        // Folder chooser (avoids NSSavePanel crash you hit earlier)
+        let panel = NSOpenPanel()
+        panel.title = "Choose a Folder"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        guard panel.runModal() == .OK, let dir = panel.url else { return }
+
+        let suggested: String = {
+            if let current = currentDocumentURL?.deletingPathExtension().lastPathComponent, !current.isEmpty {
+                return current + ".png"
+            } else {
+                return "Untitled.png"
+            }
+        }()
+
+        let alert = NSAlert()
+        alert.messageText = "Save As"
+        alert.informativeText = "Enter a file name:"
+        let nameField = NSTextField(string: suggested)
+        nameField.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
+        alert.accessoryView = nameField
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        var filename = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if filename.isEmpty { filename = suggested }
+        if (filename as NSString).pathExtension.isEmpty { filename += ".png" }
+        let url = dir.appendingPathComponent(filename)
+
+        if FileManager.default.fileExists(atPath: url.path) {
+            let ow = NSAlert()
+            ow.messageText = "Replace existing file?"
+            ow.informativeText = "A file named “\(filename)” already exists in this location."
+            ow.alertStyle = .warning
+            ow.addButton(withTitle: "Replace")
+            ow.addButton(withTitle: "Cancel")
+            guard ow.runModal() == .alertFirstButtonReturn else { return }
+        }
+
+        currentDocumentURL = url
+        doSave(to: url)
+    }
+
+    @objc func fileNew(_ sender: Any?) {
+        currentDocumentURL = nil
+        canvasView()?.clearCanvas()
+    }
+
+    @objc func fileOpen(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.title = "Open Image"
+        panel.allowedFileTypes = ["png","jpg","jpeg","bmp","tiff","gif","heic"]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url, let image = NSImage(contentsOf: url) else { return }
+            guard let canvas = self?.canvasView() else { return }
+
+            canvas.canvasImage = image.copy() as? NSImage
+            canvas.canvasRect = NSRect(origin: .zero, size: image.size)
+            canvas.updateCanvasSize(to: image.size)
+            canvas.needsDisplay = true
+
+            self?.currentDocumentURL = url
+        }
     }
 
     // MARK: - Send (email)
@@ -680,4 +804,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         image.addRepresentation(rep)
         return image
     }
+
+    private func makeCommandEvent(char: String) -> NSEvent {
+        return NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: char,
+            charactersIgnoringModifiers: char,
+            isARepeat: false,
+            keyCode: 0
+        )!
+    }
+
+    /// Extract the current selection as an image (selectedImage if present, else render selectionRect)
+    private func currentSelectionImage(from canvas: CanvasView) -> NSImage? {
+        if let img = canvas.selectedImage {
+            return img
+        }
+        if let rect = canvas.selectionRect, let base = canvas.canvasImage {
+            let image = NSImage(size: rect.size)
+            image.lockFocus()
+            base.draw(at: .zero, from: rect, operation: .copy, fraction: 1.0)
+            image.unlockFocus()
+            return image
+        }
+        return nil
+    }
 }
+

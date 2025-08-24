@@ -108,6 +108,7 @@ class ToolbarView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        Swift.print("🛠️ ToolbarView mouseDown at:", convert(event.locationInWindow, from: nil))
         let locationInView = convert(event.locationInWindow, from: nil)
         let cellSize: CGFloat = 40
         let columns = 2
@@ -118,6 +119,7 @@ class ToolbarView: NSView {
         
         if tools.indices.contains(index) {
             let tool = tools[index]
+            Swift.print("🛠️ select tool:", tool)
             selectedToolIndex = index
             delegate?.toolSelected(tool)
             setNeedsDisplay(bounds)

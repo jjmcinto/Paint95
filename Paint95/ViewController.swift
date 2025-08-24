@@ -1,261 +1,394 @@
 // ViewController.swift
-import Cocoa  // ✅ Import AppKit for NSViewController, NSColor, etc.
+import Cocoa
 
 class ViewController: NSViewController, ToolbarDelegate, ColourPaletteDelegate, CanvasViewDelegate, ToolSizeSelectorDelegate {
-
+    
     @IBOutlet weak var canvasView: CanvasView!
     @IBOutlet weak var toolbarView: ToolbarView!
     @IBOutlet weak var colourPaletteView: ColourPaletteView!
     @IBOutlet weak var colourSwatchView: ColourSwatchView!
     
-    var toolSizeButtons: [NSButton] = []
-    var colourPickerWindow: ColourSelectionWindowController?
+    // Layout constants
+    private let kPaletteHeight: CGFloat   = 80
+    private let kStripHeight: CGFloat     = 24
+    private let kGapSigToPalette: CGFloat = 4
+    private let kGapPaletteToStrip: CGFloat = 6
+    private let kGapStripToStatus: CGFloat  = 6
+    
+    // Runtime UI we add with Auto Layout
+    private var statusBarField: NSTextField!
+    private var signatureLabel: NSTextField!
+    private var toolSizeSelectorView: ToolSizeSelectorView!
+    private var canvasScrollView: NSScrollView?
+    private var didEmbedCanvasInScroll = false
     private var colourWindowController: ColourSelectionWindowController?
     
+    // NEW: fixed left column so the toolbar can’t move
+    private var leftColumn: NSView!
+    
     deinit {
+        NotificationCenter.default.removeObserver(self, name: .colourPicked, object: nil)
         print("ViewController deinitialized")
     }
     
+    // MARK: - Outlet sanity check
+    func verifyOutlets(tag: String) -> Bool {
+        var ok = true
+        if canvasView == nil { print("[\(tag)] ❌ canvasView outlet is nil"); ok = false }
+        if toolbarView == nil { print("[\(tag)] ❌ toolbarView outlet is nil"); ok = false }
+        if colourPaletteView == nil { print("[\(tag)] ❌ colourPaletteView outlet is nil"); ok = false }
+        if colourSwatchView == nil { print("[\(tag)] ❌ colourSwatchView outlet is nil"); ok = false }
+        if ok { print("[\(tag)] ✅ All outlets non-nil") }
+        return ok
+    }
+    
+    // MARK: - Lifecycle
     override func viewDidLoad() {
         super.viewDidLoad()
-        NotificationCenter.default.addObserver(self, selector: #selector(updateColourSwatch(_:)), name: .colourPicked, object: nil)
+        guard verifyOutlets(tag: "viewDidLoad") else { return }
         
         toolbarView.delegate = self
         colourPaletteView.delegate = self
         canvasView.delegate = self
         
-        // --- Create tool-size selector ---
-        let toolSizeSelectorView = ToolSizeSelectorView()
-        toolSizeSelectorView.translatesAutoresizingMaskIntoConstraints = false
-        toolSizeSelectorView.delegate = self
+        NotificationCenter.default.addObserver(self, selector: #selector(updateColourSwatch(_:)), name: .colourPicked, object: nil)
         
-        // --- Bottom row (palette + tool-size) ---
-        let bottomRow = NSStackView()
-        bottomRow.orientation = .horizontal
-        bottomRow.alignment = .centerY
-        bottomRow.distribution = .fill
-        bottomRow.spacing = 12
-        bottomRow.translatesAutoresizingMaskIntoConstraints = false
-        self.view.addSubview(bottomRow)
+        // 0) Create a fixed left column and move toolbox + swatch into it
+        buildLeftColumnAndReparentLeftControls()
         
-        // Reparent the palette into the bottom row so storyboard constraints won’t fight us
-        colourPaletteView.removeFromSuperview()
-        colourPaletteView.translatesAutoresizingMaskIntoConstraints = false
-        bottomRow.addArrangedSubview(colourPaletteView)
-        NSLayoutConstraint.activate([
-            colourPaletteView.heightAnchor.constraint(equalToConstant: 80),
-            colourPaletteView.widthAnchor.constraint(equalToConstant: 320)
-        ])
+        // 1) Status bar FIRST
+        setupStatusBar()
         
-        // Add the tool-size selector to the bottom row (to the right of the palette)
-        bottomRow.addArrangedSubview(toolSizeSelectorView)
-        // Tool size selector beside the palette, same height, stretches to the right
-        toolSizeSelectorView.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        toolSizeSelectorView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        NSLayoutConstraint.activate([
-            // vertically aligned with the palette
-            toolSizeSelectorView.topAnchor.constraint(equalTo: colourPaletteView.topAnchor),
-            toolSizeSelectorView.bottomAnchor.constraint(equalTo: colourPaletteView.bottomAnchor),
-
-            // placed immediately to the right of the palette
-            toolSizeSelectorView.leadingAnchor.constraint(equalTo: colourPaletteView.trailingAnchor, constant: 12),
-
-            // stretch all the way to the right edge
-            toolSizeSelectorView.trailingAnchor.constraint(equalTo: self.view.trailingAnchor, constant: -12),
-
-            // give it a *minimum* comfortable width so it doesn't get tiny
-            toolSizeSelectorView.widthAnchor.constraint(greaterThanOrEqualToConstant: 260)
-        ])
-        colourPaletteView.setContentHuggingPriority(.required, for: .horizontal)
+        // 2) Embed canvas + signature
+        embedCanvasIfNeeded()
         
-        // Position the entire bottom row: to the right of the toolbar, along the bottom, full width
-        NSLayoutConstraint.activate([
-            bottomRow.leadingAnchor.constraint(equalTo: toolbarView.trailingAnchor, constant: 8),
-            bottomRow.trailingAnchor.constraint(equalTo: self.view.trailingAnchor, constant: -12),
-            bottomRow.bottomAnchor.constraint(equalTo: self.view.bottomAnchor, constant: -8)
-        ])
+        // 3) Palette between signature and status
+        placePaletteBetweenSignatureAndStatus()
         
+        // 4) Size strip to the right of the palette
+        placeToolSizeStripRightOfPalette()
+        
+        // Swatch click -> colour dialog
         colourSwatchView.colour = canvasView.currentColour
-        colourSwatchView.onClick = { [weak self] in
-            self?.presentColourSelection()
-        }
+        colourSwatchView.onClick = { [weak self] in self?.presentColourSelection() }
         
-        // --- Enable scrolling for the existing canvasView ---
-        if let host = canvasView.superview {
-            let oldCanvas = canvasView!
-            oldCanvas.removeFromSuperview()
-            
-            let scroll = NSScrollView()
-            scroll.translatesAutoresizingMaskIntoConstraints = false
-            scroll.hasVerticalScroller = true
-            scroll.hasHorizontalScroller = true
-            scroll.autohidesScrollers = false
-            scroll.borderType = .bezelBorder
-            scroll.drawsBackground = true
-            scroll.backgroundColor = .windowBackgroundColor
-            
-            host.addSubview(scroll)
-            
-            // --- Signature label (between canvas and palette) ---
-            let signatureLabel = NSTextField(labelWithString: "© 2025 Paint95 — Jeffrey McIntosh")
-            signatureLabel.translatesAutoresizingMaskIntoConstraints = false
-            signatureLabel.alignment = .center
-            signatureLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-            signatureLabel.textColor = .secondaryLabelColor
-            signatureLabel.lineBreakMode = .byTruncatingTail
-            host.addSubview(signatureLabel)
-            
-            NSLayoutConstraint.activate([
-                scroll.leadingAnchor.constraint(equalTo: toolbarView.trailingAnchor, constant: 8),
-                scroll.topAnchor.constraint(equalTo: self.view.topAnchor, constant: 8),
-                scroll.bottomAnchor.constraint(equalTo: signatureLabel.topAnchor, constant: -4),
-                scroll.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: 0)
-            ])
-            NSLayoutConstraint.activate([
-                // horizontally aligned with the canvas area (to the right of the toolbar)
-                signatureLabel.leadingAnchor.constraint(equalTo: toolbarView.trailingAnchor, constant: 8),
-                signatureLabel.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -8),
-
-                // sits just above the bottom row (palette + tool-size)
-                signatureLabel.bottomAnchor.constraint(equalTo: colourPaletteView.topAnchor, constant: -4)
-            ])
-            
-            oldCanvas.translatesAutoresizingMaskIntoConstraints = true
-            scroll.documentView = oldCanvas
-            oldCanvas.updateCanvasSize(to: oldCanvas.canvasRect.size)
-        }
-        
-        // Global key handling
+        // Keyboard routing
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-           guard let self = self else { return event }
-           return self.handleGlobalKeyDown(event)
+            guard let self = self else { return event }
+            return self.handleGlobalKeyDown(event)
         }
     }
-
     
     override func viewDidAppear() {
         super.viewDidAppear()
-        
-        // Ensure the window is resizable and has a sane minimum size
         if let win = self.view.window {
             win.styleMask.insert(.resizable)
-            // If you had a too-large minimum size somewhere, tame it:
+            win.contentMinSize = NSSize(width: 700, height: 500)
+            win.contentMaxSize = NSSize(width: 12000, height: 9000)
+            win.resizeIncrements = NSSize(width: 1, height: 1)
             win.minSize = NSSize(width: 640, height: 480)
-            // (Optional) if maxSize was set elsewhere, clear it:
-            win.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+            win.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                 height: CGFloat.greatestFiniteMagnitude)
         }
     }
-
     
+    // Keep controls above scroll content
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        if let scroll = canvasScrollView {
+            view.addSubview(colourPaletteView, positioned: .above, relativeTo: scroll)
+            if let strip = toolSizeSelectorView {
+                view.addSubview(strip, positioned: .above, relativeTo: scroll)
+            }
+        }
+    }
+    
+    // MARK: - Left column (TOOLBOX + SWATCH)
+    
+    private func buildLeftColumnAndReparentLeftControls() {
+        // Make sure IB views are AL-friendly before we move them
+        toolbarView.translatesAutoresizingMaskIntoConstraints = false
+        colourSwatchView.translatesAutoresizingMaskIntoConstraints = false
+        
+        // Create column
+        let col = NSView()
+        col.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(col)
+        self.leftColumn = col
+        
+        // Column pinned to window edges (left+top+bottom), fixed width (use swatch width: 101)
+        NSLayoutConstraint.activate([
+            col.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            col.topAnchor.constraint(equalTo: view.topAnchor),
+            col.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            col.widthAnchor.constraint(equalToConstant: 101)
+        ])
+        
+        // Reparent toolbox + swatch
+        toolbarView.removeFromSuperview()
+        colourSwatchView.removeFromSuperview()
+        col.addSubview(toolbarView)
+        col.addSubview(colourSwatchView)
+        
+        // Toolbox at top, full width of column
+        NSLayoutConstraint.activate([
+            toolbarView.leadingAnchor.constraint(equalTo: col.leadingAnchor),
+            toolbarView.trailingAnchor.constraint(equalTo: col.trailingAnchor),
+            toolbarView.topAnchor.constraint(equalTo: col.topAnchor, constant: 8),
+            
+            // Keep toolbox above the swatch (equal spacing)
+            toolbarView.bottomAnchor.constraint(lessThanOrEqualTo: colourSwatchView.topAnchor, constant: -8)
+        ])
+        
+        // Swatch at bottom, full width
+        NSLayoutConstraint.activate([
+            colourSwatchView.leadingAnchor.constraint(equalTo: col.leadingAnchor),
+            colourSwatchView.trailingAnchor.constraint(equalTo: col.trailingAnchor),
+            colourSwatchView.bottomAnchor.constraint(equalTo: col.bottomAnchor),
+            colourSwatchView.heightAnchor.constraint(equalToConstant: 54)
+        ])
+        
+        // Give the toolbox a sane width inside the 101 column
+        toolbarView.widthAnchor.constraint(lessThanOrEqualToConstant: 100).isActive = true
+        
+        // z-order to keep toolbox clickable
+        view.addSubview(col, positioned: .above, relativeTo: nil)
+    }
+    
+    // MARK: - UI builders
+    
+    private func setupStatusBar() {
+        let status = NSTextField(labelWithString: "X: 0, Y: 0    Selection: —")
+        status.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        status.alignment = .left
+        status.lineBreakMode = .byTruncatingTail
+        status.translatesAutoresizingMaskIntoConstraints = false
+        status.wantsLayer = true
+        status.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.9).cgColor
+        status.layer?.cornerRadius = 4
+        status.layer?.borderColor = NSColor.separatorColor.cgColor
+        status.layer?.borderWidth = 1
+        status.identifier = NSUserInterfaceItemIdentifier("StatusBar")
+        view.addSubview(status)
+        statusBarField = status
+        
+        NSLayoutConstraint.activate([
+            status.leadingAnchor.constraint(equalTo: leftColumn.trailingAnchor, constant: 8),
+            status.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+            status.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -6),
+            status.heightAnchor.constraint(equalToConstant: 20)
+        ])
+    }
+    
+    private func embedCanvasIfNeeded() {
+        guard !didEmbedCanvasInScroll,
+              let host = canvasView?.superview,
+              let oldCanvas = canvasView else { return }
+        
+        didEmbedCanvasInScroll = true
+        oldCanvas.removeFromSuperview()
+        
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
+        scroll.autohidesScrollers = false
+        scroll.borderType = .bezelBorder
+        scroll.drawsBackground = true
+        scroll.backgroundColor = .windowBackgroundColor
+        scroll.identifier = NSUserInterfaceItemIdentifier("CanvasScrollView")
+        scroll.allowsMagnification = true
+        scroll.minMagnification = 0.25
+        scroll.maxMagnification = 8.0
+        scroll.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        scroll.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        
+        host.addSubview(scroll)
+        canvasScrollView = scroll
+        
+        // Copyright just below the canvas area
+        let sig = NSTextField(labelWithString: "© 2025 Paint95 — Jeffrey McIntosh")
+        sig.translatesAutoresizingMaskIntoConstraints = false
+        sig.alignment = .center
+        sig.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        sig.textColor = .secondaryLabelColor
+        sig.lineBreakMode = .byTruncatingTail
+        host.addSubview(sig)
+        signatureLabel = sig
+        
+        // Reserve a full band height: palette + strip + gaps
+        let fullBand = -(kGapSigToPalette + kPaletteHeight + kGapPaletteToStrip + kStripHeight + kGapStripToStatus)
+        
+        NSLayoutConstraint.activate([
+            // Canvas area to the right of the column, above the signature
+            scroll.leadingAnchor.constraint(equalTo: leftColumn.trailingAnchor, constant: 8),
+            scroll.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: signatureLabel.topAnchor, constant: -4),
+            
+            // Signature spanning the content width, just above the “band”
+            signatureLabel.leadingAnchor.constraint(equalTo: leftColumn.trailingAnchor, constant: 8),
+            signatureLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+            signatureLabel.bottomAnchor.constraint(equalTo: statusBarField.topAnchor, constant: fullBand)
+        ])
+        
+        // Document view must size itself
+        oldCanvas.translatesAutoresizingMaskIntoConstraints = true
+        scroll.documentView = oldCanvas
+        oldCanvas.updateCanvasSize(to: oldCanvas.canvasRect.size)
+    }
+    
+    private func placePaletteBetweenSignatureAndStatus() {
+        colourPaletteView.removeFromSuperview()
+        colourPaletteView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(colourPaletteView)
+        
+        NSLayoutConstraint.activate([
+            colourPaletteView.leadingAnchor.constraint(equalTo: leftColumn.trailingAnchor, constant: 8),
+            colourPaletteView.topAnchor.constraint(equalTo: signatureLabel.bottomAnchor, constant: kGapSigToPalette),
+            colourPaletteView.heightAnchor.constraint(equalToConstant: kPaletteHeight),
+            // leave some room on the right for the size strip
+            colourPaletteView.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -180)
+        ])
+        
+        colourPaletteView.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        colourPaletteView.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+    }
+    
+    private func placeToolSizeStripRightOfPalette() {
+        let strip = ToolSizeSelectorView()
+        strip.translatesAutoresizingMaskIntoConstraints = false
+        strip.delegate = self
+        view.addSubview(strip)
+        toolSizeSelectorView = strip
+        
+        NSLayoutConstraint.activate([
+            strip.leadingAnchor.constraint(equalTo: colourPaletteView.trailingAnchor, constant: 8),
+            strip.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            strip.topAnchor.constraint(equalTo: colourPaletteView.bottomAnchor, constant: kGapPaletteToStrip),
+            strip.heightAnchor.constraint(equalToConstant: kStripHeight),
+            strip.bottomAnchor.constraint(equalTo: statusBarField.topAnchor, constant: -kGapStripToStatus)
+        ])
+        
+        strip.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        strip.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    }
+    
+    // MARK: - Status updates from CanvasView
+    func canvasStatusDidChange(cursor: NSPoint, selectionSize: NSSize?) {
+        let x = Int(cursor.x.rounded())
+        let y = Int(cursor.y.rounded())
+        let selText: String = {
+            if let s = selectionSize, s.width > 0, s.height > 0 {
+                return "Selection: \(Int(s.width))×\(Int(s.height))"
+            } else {
+                return "Selection: —"
+            }
+        }()
+        statusBarField?.stringValue = "X: \(x), Y: \(y)    \(selText)"
+    }
+    
+    // MARK: - Colour picker window
     func presentColourSelection() {
         let initialRGB: [Double]
-        
         if canvasView.colourFromSelectionWindow {
             initialRGB = AppColourState.shared.rgb
         } else {
-            guard let rgbColour = canvasView.currentColour.usingColorSpace(.deviceRGB) else {
-                print("Failed to convert colour to deviceRGB")
-                return
-            }
-            initialRGB = [
-                Double(rgbColour.redComponent * 255.0),
-                Double(rgbColour.greenComponent * 255.0),
-                Double(rgbColour.blueComponent * 255.0)
-            ]
+            guard let rgb = canvasView.currentColour.usingColorSpace(.deviceRGB) else { return }
+            initialRGB = [Double(rgb.redComponent * 255.0),
+                          Double(rgb.greenComponent * 255.0),
+                          Double(rgb.blueComponent * 255.0)]
         }
-
+        
         let controller = ColourSelectionWindowController(
-                    initialRGB: initialRGB,
-                    onColourSelected: { [weak self] newColour in
-                        // Broadcast and clean up
-                        NotificationCenter.default.post(name: .colourPicked, object: newColour)
-                        self?.colourWindowController = nil
-                    },
-                    onCancel: { [weak self] in
-                        // Just release when the user cancels/closes
-                        self?.colourWindowController = nil
-                    }
-                )
-
+            initialRGB: initialRGB,
+            onColourSelected: { [weak self] newColour in
+                NotificationCenter.default.post(name: .colourPicked, object: newColour)
+                self?.colourWindowController = nil
+            },
+            onCancel: { [weak self] in
+                self?.colourWindowController = nil
+            }
+        )
         colourWindowController = controller
-                controller.showWindow(self.view.window)          // present
-                controller.window?.makeKeyAndOrderFront(nil)     // ensure frontmost
+        controller.showWindow(self.view.window)
+        controller.window?.makeKeyAndOrderFront(nil)
     }
     
+    // MARK: - Keyboard routing
     func handleGlobalKeyDown(_ event: NSEvent) -> NSEvent? {
-        // 1) If a sheet/panel is key, let it handle typing.
         if NSApp.keyWindow !== self.view.window { return event }
         if let fr = self.view.window?.firstResponder, !(fr is CanvasView) { return event }
-        
         switch event.keyCode {
-            case 51, 117: // DELETE
-                canvasView.deleteSelectionOrPastedImage()
-                return nil
-            case 123: // ←
-                canvasView.moveSelectionBy(dx: -1, dy: 0)
-                return nil
-            case 124: // →
-                canvasView.moveSelectionBy(dx: 1, dy: 0)
-                return nil
-            case 125: // ↓
-                canvasView.moveSelectionBy(dx: 0, dy: -1)
-                return nil
-            case 126: // ↑
-                canvasView.moveSelectionBy(dx: 0, dy: 1)
-                return nil
-            default:
-                return event
+        case 51, 117: canvasView.deleteSelectionOrPastedImage(); return nil   // delete / fn-delete
+        case 123: canvasView.moveSelectionBy(dx: -1, dy: 0); return nil
+        case 124: canvasView.moveSelectionBy(dx:  1, dy: 0); return nil
+        case 125: canvasView.moveSelectionBy(dx:  0, dy: -1); return nil
+        case 126: canvasView.moveSelectionBy(dx:  0, dy: 1); return nil
+        default: return event
         }
     }
     
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 51 { // 51 = Delete key
+        if event.keyCode == 51 {
             canvasView.deleteSelectionOrPastedImage()
         } else {
             super.keyDown(with: event)
         }
     }
-
+    
     @objc func updateColourSwatch(_ notification: Notification) {
         if let colour = notification.object as? NSColor {
             colourSwatchView.colour = colour
         }
     }
-
-    // MARK: - ToolbarDelegate
-    func toolSelected(_ tool: PaintTool) {
-        canvasView.currentTool = tool
-    }
     
-    func toolSizeSelected(_ size: CGFloat) {
-        canvasView.toolSize = size
-    }
+    // MARK: - ToolbarDelegate
+    func toolSelected(_ tool: PaintTool) { canvasView.currentTool = tool }
+    func toolSizeSelected(_ size: CGFloat) { canvasView.toolSize = size }
     
     // MARK: - ColourPaletteDelegate
     func colourSelected(_ colour: NSColor) {
         canvasView.currentColour = colour
         canvasView.colourFromSelectionWindow = false
-        guard let rgbColour = colour.usingColorSpace(.deviceRGB) else {
-            print("Failed to convert colour to deviceRGB")
-            return
-        }
+        guard let rgb = colour.usingColorSpace(.deviceRGB) else { return }
         AppColourState.shared.rgb = [
-            Double(rgbColour.redComponent * 255.0),
-            Double(rgbColour.greenComponent * 255.0),
-            Double(rgbColour.blueComponent * 255.0)
+            Double(rgb.redComponent * 255.0),
+            Double(rgb.greenComponent * 255.0),
+            Double(rgb.blueComponent * 255.0)
         ]
-        colourSwatchView.colour = rgbColour
+        colourSwatchView.colour = rgb
     }
     
     // Optional: Clear button or menu action
     @IBAction func clearCanvas(_ sender: Any) {
         canvasView.clearCanvas()
     }
+    
+    // CanvasViewDelegate (colour pick)
     func didPickColour(_ colour: NSColor) {
         canvasView.currentColour = colour
         colourPaletteView.selectedColour = colour
         colourPaletteView.needsDisplay = true
         colourSwatchView.colour = colour
+    }
+    // MARK: - Visibility helpers (used by AppDelegate View menu)
+    var isToolBoxVisible: Bool {
+        return !toolbarView.isHidden
+    }
+
+    var isColorBoxVisible: Bool {
+        return !colourPaletteView.isHidden
+    }
+
+    func setToolBoxVisible(_ visible: Bool) {
+        toolbarView.isHidden = !visible
+        // If hiding/showing affects layout, you can animate and relayout:
+        view.layoutSubtreeIfNeeded()
+    }
+
+    func setColorBoxVisible(_ visible: Bool) {
+        colourPaletteView.isHidden = !visible
+        view.layoutSubtreeIfNeeded()
     }
 }
