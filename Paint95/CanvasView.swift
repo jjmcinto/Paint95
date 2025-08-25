@@ -17,6 +17,31 @@ extension Notification.Name {
 }
 
 extension CanvasView {
+    /// Replace the backing raster and (optionally) clear any vector/path caches,
+    /// so later tools (fill, pick colour) don't resurrect pre-transform pixels.
+    func commitRasterChange(_ newImage: NSImage, resetVectors: Bool = true) {
+        // Undo is handled by callers via saveUndoState()
+        self.canvasImage = newImage
+
+        if resetVectors {
+            self.drawnPaths.removeAll()
+        }
+
+        // If the raster size changed, keep the logical canvas/view in sync.
+        if self.canvasRect.size != newImage.size {
+            self.canvasRect.origin = .zero
+            _ = self.updateCanvasSize(to: newImage.size)
+        }
+
+        // Any uncommitted paste/selection preview is invalid after a global transform
+        self.isPastingImage = false
+        self.isPastingActive = false
+        self.pastedImage = nil
+        self.pastedImageOrigin = nil
+
+        self.needsDisplay = true
+    }
+    
     /// Resize the canvas to `newSize`, preserving existing pixels anchored at the TOP-LEFT corner.
     /// Adds white space (right/bottom) when growing; crops from the bottom/right when shrinking.
     func setCanvasSizeAnchoredTopLeft(to newSize: NSSize) {
@@ -200,6 +225,8 @@ class CanvasView: NSView {
     // Scroll
     override var isOpaque: Bool { true }  // avoids transparent compositing
     override var wantsUpdateLayer: Bool { false }
+    
+    @objc dynamic var drawOpaque: Bool = true   // default ON like classic Paint
     
     func setActiveColour(_ colour: NSColor, for slot: ActiveColourSlot) {
         switch slot {
@@ -1167,47 +1194,58 @@ class CanvasView: NSView {
             pastedImage = nil
             pastedImageOrigin = nil
         }
-        
-        if let images = pasteboard.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage],
-           let img = images.first {
 
-            // Clear any old selection state
-            selectionRect = nil
-            selectedImage = nil
-            selectedImageOrigin = nil
+        guard
+            let images = pasteboard.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage],
+            var img = images.first
+        else { return }
 
-            // Start Paste Mode (overlay)
-            pastedImage = img
-            let origin = NSPoint(x: 100, y: 100)
-            pastedImageOrigin = origin
-            isPastingImage = true
-            isPastingActive = true
-            hasMovedSelection = false
-
-            // Make the pasted content the active "selection"
-            selectedImage = img
-            selectedImageOrigin = origin
-            selectionRect = NSRect(origin: origin, size: img.size)
-            
-            //scroll to show pasted content
-            if let clipView = superview as? NSClipView {
-                clipView.scrollToVisible(NSRect(origin: origin, size: selectedImage!.size))
+        // ── NEW: apply color-key transparency if Draw Opaque is OFF ───────────────
+        if !drawOpaque {
+            // Use your app's background/secondary colour here if you track one:
+            let keyColour = NSColor.white
+            if let keyed = imageByMakingColorTransparent(img, key: keyColour, tolerance: 0.02) {
+                img = keyed
             }
-            
-            // Ensure the canvas is large enough to show it; grow if needed.
-            let requiredWidth  = max(canvasRect.width,  origin.x + img.size.width)
-            let requiredHeight = max(canvasRect.height, origin.y + img.size.height)
-            if requiredWidth != canvasRect.width || requiredHeight != canvasRect.height {
-                updateCanvasSize(to: NSSize(width: requiredWidth, height: requiredHeight))
-            }
-            
-            // Ensure the selection tool is active so move/resize works
-            currentTool = .select
-            NotificationCenter.default.post(name: .toolChanged, object: PaintTool.select)
-
-            self.window?.makeFirstResponder(self)
-            needsDisplay = true
         }
+        // ─────────────────────────────────────────────────────────────────────────
+
+        // Clear any old selection state
+        selectionRect = nil
+        selectedImage = nil
+        selectedImageOrigin = nil
+
+        // Start Paste Mode (overlay)
+        let origin = NSPoint(x: 100, y: 100)
+        pastedImage = img
+        pastedImageOrigin = origin
+        isPastingImage = true
+        isPastingActive = true
+        hasMovedSelection = false
+
+        // Make the pasted content the active "selection"
+        selectedImage = img
+        selectedImageOrigin = origin
+        selectionRect = NSRect(origin: origin, size: img.size)
+
+        // Scroll to show pasted content
+        if let clipView = superview as? NSClipView {
+            clipView.scrollToVisible(NSRect(origin: origin, size: img.size))
+        }
+
+        // Ensure the canvas is large enough to show it; grow if needed.
+        let requiredWidth  = max(canvasRect.width,  origin.x + img.size.width)
+        let requiredHeight = max(canvasRect.height, origin.y + img.size.height)
+        if requiredWidth != canvasRect.width || requiredHeight != canvasRect.height {
+            updateCanvasSize(to: NSSize(width: requiredWidth, height: requiredHeight))
+        }
+
+        // Ensure the selection tool is active so move/resize works
+        currentTool = .select
+        NotificationCenter.default.post(name: .toolChanged, object: PaintTool.select)
+
+        self.window?.makeFirstResponder(self)
+        needsDisplay = true
     }
 
     func commitSelection() {
@@ -1966,6 +2004,42 @@ class CanvasView: NSView {
     override var intrinsicContentSize: NSSize {
         return canvasRect.size
     }
+    
+    /// Make all pixels that match `key` (within `tolerance`) transparent.
+    func imageByMakingColorTransparent(_ image: NSImage,
+                                       key: NSColor,
+                                       tolerance: CGFloat = 0.0) -> NSImage? {
+        guard let rep = image.rgba8Bitmap(), let data = rep.bitmapData else { return nil }
+
+        // Normalize key to deviceRGB
+        let k = (key.usingColorSpace(.deviceRGB) ?? key)
+        let kr = UInt8(round(k.redComponent   * 255))
+        let kg = UInt8(round(k.greenComponent * 255))
+        let kb = UInt8(round(k.blueComponent  * 255))
+
+        let w = rep.pixelsWide, h = rep.pixelsHigh
+        let spp = rep.samplesPerPixel // 4
+        let bpr = rep.bytesPerRow
+        let tol = UInt8(max(0, min(255, Int(tolerance * 255))))
+
+        func close(_ a: UInt8, _ b: UInt8) -> Bool {
+            let d = a > b ? a - b : b - a
+            return d <= tol
+        }
+
+        for y in 0..<h {
+            let row = data.advanced(by: y * bpr)
+            for x in 0..<w {
+                let p = row.advanced(by: x * spp) // RGBA
+                if close(p[0], kr) && close(p[1], kg) && close(p[2], kb) {
+                    p[3] = 0 // transparent
+                }
+            }
+        }
+        let out = NSImage(size: image.size)
+        out.addRepresentation(rep)
+        return out
+    }
 
     // The key method the rest of the code will call whenever the canvas needs to change size
     @discardableResult
@@ -1983,7 +2057,154 @@ class CanvasView: NSView {
         return newSize
     }
     
+    // MARK: - Image menu operations called by AppDelegate
+
+    func applyFlipRotate(flipHorizontal: Bool, flipVertical: Bool, rotationDegrees: Int) {
+        // Prefer active selection if present
+        if var img = selectedImage {
+            if flipHorizontal || flipVertical { img = img.flipped(horizontal: flipHorizontal, vertical: flipVertical) }
+            if rotationDegrees % 360 != 0      { img = img.rotated(byDegrees: CGFloat(rotationDegrees)) }
+
+            // Update selection buffers
+            selectedImage = img
+            if let origin = selectedImageOrigin {
+                selectionRect = NSRect(origin: origin, size: img.size)
+            }
+            needsDisplay = true
+            return
+        }
+
+        // Otherwise apply to entire canvas
+        guard var base = canvasImage else { return }
+        saveUndoState()
+        if flipHorizontal || flipVertical {
+            base = base.flipped(horizontal: flipHorizontal, vertical: flipVertical)
+        }
+        if rotationDegrees % 360 != 0 {
+            base = base.rotated(byDegrees: CGFloat(rotationDegrees))
+        }
+
+        // ✅ Make result canonical & clear stale vectors so they can't reappear
+        commitRasterChange(base, resetVectors: true)
+    }
+
+    func applyStretchSkew(scaleXPercent sx: Int, scaleYPercent sy: Int, skewXDegrees kx: Int, skewYDegrees ky: Int) {
+        // Prefer active selection if present
+        if var img = selectedImage {
+            if sx != 100 || sy != 100 {
+                img = img.scaled(byXPercent: CGFloat(sx), yPercent: CGFloat(sy))
+            }
+            if kx != 0 || ky != 0 {
+                img = img.sheared(kxDegrees: CGFloat(kx), kyDegrees: CGFloat(ky))
+            }
+
+            selectedImage = img
+            if let origin = selectedImageOrigin {
+                selectionRect = NSRect(origin: origin, size: img.size)
+            }
+            needsDisplay = true
+            return
+        }
+
+        // Otherwise apply to entire canvas
+        guard var base = canvasImage else { return }
+        saveUndoState()
+
+        if sx != 100 || sy != 100 {
+            base = base.scaled(byXPercent: CGFloat(sx), yPercent: CGFloat(sy))
+        }
+        if kx != 0 || ky != 0 {
+            base = base.sheared(kxDegrees: CGFloat(kx), kyDegrees: CGFloat(ky))
+        }
+
+        // ✅ Bake it in & drop vector cache so floodFill/eyedropper can't resurrect old geometry
+        commitRasterChange(base, resetVectors: true)
+    }
+
+    
     deinit {
         NotificationCenter.default.removeObserver(self, name: .colourPicked, object: nil)
+    }
+}
+
+// MARK: - Image transform helpers (CanvasView.swift)
+
+extension NSImage {
+    fileprivate var cgImageSafe: CGImage? {
+        guard let tiff = self.tiffRepresentation,
+              let rep  = NSBitmapImageRep(data: tiff),
+              let cg   = rep.cgImage else { return nil }
+        return cg
+    }
+
+    func rotated(byDegrees deg: CGFloat) -> NSImage {
+        let radians = deg * .pi / 180
+        let s = size
+        let outSize: NSSize = (Int(deg) % 180 == 0) ? s : NSSize(width: s.height, height: s.width)
+
+        let out = NSImage(size: outSize)
+        out.lockFocus()
+
+        let ctx = NSGraphicsContext.current!.cgContext
+        ctx.translateBy(x: outSize.width/2, y: outSize.height/2)
+        ctx.rotate(by: radians)
+
+        let drawRect = NSRect(x: -s.width/2, y: -s.height/2, width: s.width, height: s.height)
+        draw(in: drawRect, from: .zero, operation: .sourceOver, fraction: 1.0)
+
+        out.unlockFocus()
+        return out
+    }
+
+    func flipped(horizontal: Bool = false, vertical: Bool = false) -> NSImage {
+        guard horizontal || vertical else { return self }
+        let s = size
+        let out = NSImage(size: s)
+        out.lockFocus()
+        let ctx = NSGraphicsContext.current!.cgContext
+        ctx.translateBy(x: horizontal ? s.width : 0, y: vertical ? s.height : 0)
+        ctx.scaleBy(x: horizontal ? -1 : 1, y: vertical ? -1 : 1)
+        draw(in: NSRect(origin: .zero, size: s), from: .zero, operation: .sourceOver, fraction: 1.0)
+        out.unlockFocus()
+        return out
+    }
+
+    func scaled(byXPercent px: CGFloat, yPercent py: CGFloat) -> NSImage {
+        let sx = max(1, px) / 100.0
+        let sy = max(1, py) / 100.0
+        let newSize = NSSize(width: floor(size.width * sx), height: floor(size.height * sy))
+        let out = NSImage(size: newSize)
+        out.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        draw(in: NSRect(origin: .zero, size: newSize),
+             from: NSRect(origin: .zero, size: size),
+             operation: .sourceOver,
+             fraction: 1.0)
+        out.unlockFocus()
+        return out
+    }
+
+    func sheared(kxDegrees: CGFloat, kyDegrees: CGFloat) -> NSImage {
+        let kx = tan(kxDegrees * .pi / 180)
+        let ky = tan(kyDegrees * .pi / 180)
+        let s = size
+        let newW = s.width + abs(ky) * s.height
+        let newH = s.height + abs(kx) * s.width
+        let outSize = NSSize(width: ceil(newW), height: ceil(newH))
+
+        let out = NSImage(size: outSize)
+        out.lockFocus()
+        let ctx = NSGraphicsContext.current!.cgContext
+
+        // Leave space for the shear so we don’t clip
+        ctx.translateBy(x: (ky < 0 ? abs(ky) * s.height / 2 : 0),
+                        y: (kx < 0 ? abs(kx) * s.width  / 2 : 0))
+
+        let t = CGAffineTransform(a: 1, b: ky, c: kx, d: 1, tx: 0, ty: 0)
+        ctx.concatenate(t)
+
+        draw(in: NSRect(origin: .zero, size: s), from: .zero, operation: .sourceOver, fraction: 1.0)
+        out.unlockFocus()
+        return out
     }
 }

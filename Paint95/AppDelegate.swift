@@ -7,11 +7,258 @@ private extension NSView {
     }
 }
 
+private extension CanvasView {
+    // Call from AppDelegate safely
+    func setDrawOpaqueIfAvailable(_ flag: Bool) {
+        // If your CanvasView already has `drawOpaque`, this will work after you add it.
+        // Otherwise, no-op (keeps AppDelegate decoupled).
+        if responds(to: Selector(("setDrawOpaque:"))) {
+            setValue(flag, forKey: "drawOpaque")
+        }
+    }
+}
+
+// MARK: - Flip / Rotate sheet
+
+final class FlipRotateSheetController: NSWindowController {
+    private let flipNone = NSButton(radioButtonWithTitle: "None", target: nil, action: nil)
+    private let flipH    = NSButton(radioButtonWithTitle: "Horizontal", target: nil, action: nil)
+    private let flipV    = NSButton(radioButtonWithTitle: "Vertical",   target: nil, action: nil)
+
+    private let rot0   = NSButton(radioButtonWithTitle: "0°",   target: nil, action: nil)
+    private let rot90  = NSButton(radioButtonWithTitle: "90°",  target: nil, action: nil)
+    private let rot180 = NSButton(radioButtonWithTitle: "180°", target: nil, action: nil)
+    private let rot270 = NSButton(radioButtonWithTitle: "270°", target: nil, action: nil)
+
+    private let onApply: (_ flipH: Bool, _ flipV: Bool, _ rotationDegrees: Int) -> Void
+
+    init(onApply: @escaping (Bool, Bool, Int) -> Void) {
+        self.onApply = onApply
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 230),
+            styleMask: [.titled, .closable],
+            backing: .buffered, defer: false
+        )
+        panel.title = "Flip/Rotate"
+        super.init(window: panel)
+        buildUI()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    private func buildUI() {
+        guard let panel = window else { return }
+
+        // hook up radio actions for exclusivity
+        [flipNone, flipH, flipV].forEach {
+            $0.target = self
+            $0.action = #selector(flipChanged(_:))
+        }
+        [rot0, rot90, rot180, rot270].forEach {
+            $0.target = self
+            $0.action = #selector(rotationChanged(_:))
+        }
+
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = 14
+        root.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        root.translatesAutoresizingMaskIntoConstraints = false
+
+        let flipLabel = NSTextField(labelWithString: "Flip:")
+        flipLabel.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        flipNone.state = .on
+        let flipRow = NSStackView(views: [flipNone, flipH, flipV])
+        flipRow.orientation = .horizontal
+        flipRow.spacing = 12
+
+        let rotLabel = NSTextField(labelWithString: "Rotate:")
+        rotLabel.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        rot0.state = .on
+        let rotRow = NSStackView(views: [rot0, rot90, rot180, rot270])
+        rotRow.orientation = .horizontal
+        rotRow.spacing = 12
+
+        let ok = NSButton(title: "OK", target: self, action: #selector(tapOK))
+        ok.keyEquivalent = "\r"
+        let cancel = NSButton(title: "Cancel", target: self, action: #selector(tapCancel))
+        cancel.keyEquivalent = "\u{1b}"
+        let spring = NSView()
+        let btnRow = NSStackView(views: [spring, cancel, ok])
+        btnRow.orientation = .horizontal
+        btnRow.alignment = .centerY
+        btnRow.spacing = 8
+
+        [flipLabel, flipRow, rotLabel, rotRow, btnRow].forEach { root.addArrangedSubview($0) }
+
+        let content = NSView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(root)
+        panel.contentView = content
+
+        NSLayoutConstraint.activate([
+            root.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            root.topAnchor.constraint(equalTo: content.topAnchor),
+            root.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            content.widthAnchor.constraint(greaterThanOrEqualToConstant: 380),
+            content.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
+        ])
+    }
+
+    // enforce single selection within the Flip group
+    @objc private func flipChanged(_ sender: NSButton) {
+        for btn in [flipNone, flipH, flipV] {
+            btn.state = (btn === sender) ? .on : .off
+        }
+    }
+
+    // enforce single selection within the Rotate group
+    @objc private func rotationChanged(_ sender: NSButton) {
+        for btn in [rot0, rot90, rot180, rot270] {
+            btn.state = (btn === sender) ? .on : .off
+        }
+    }
+
+    @objc private func tapOK() {
+        guard let panel = window, let parent = panel.sheetParent else { return }
+        let flipHOn = flipH.state == .on
+        let flipVOn = flipV.state == .on
+        let rotation: Int = rot90.state == .on ? 90 : rot180.state == .on ? 180 : rot270.state == .on ? 270 : 0
+        parent.endSheet(panel, returnCode: .OK)
+        panel.close()
+        onApply(flipHOn, flipVOn, rotation)
+    }
+
+    @objc private func tapCancel() {
+        guard let panel = window, let parent = panel.sheetParent else { return }
+        parent.endSheet(panel, returnCode: .cancel)
+        panel.close()
+    }
+}
+
+// MARK: - Stretch / Skew sheet
+
+final class StretchSkewSheetController: NSWindowController, NSTextFieldDelegate {
+
+    private let scaleXField = NSTextField(string: "100")
+    private let scaleYField = NSTextField(string: "100")
+    private let skewXField  = NSTextField(string: "0")
+    private let skewYField  = NSTextField(string: "0")
+    private let keepAspect  = NSButton(checkboxWithTitle: "Maintain aspect ratio", target: nil, action: nil)
+
+    private let onApply: (_ scaleX: Int, _ scaleY: Int, _ skewX: Int, _ skewY: Int) -> Void
+
+    init(onApply: @escaping (Int, Int, Int, Int) -> Void) {
+        self.onApply = onApply
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 240),
+            styleMask: [.titled, .closable],
+            backing: .buffered, defer: false
+        )
+        panel.title = "Stretch/Skew"
+        super.init(window: panel)
+        buildUI()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    private func buildUI() {
+        guard let panel = window else { return }
+
+        func label(_ s: String) -> NSTextField {
+            let l = NSTextField(labelWithString: s)
+            l.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+            return l
+        }
+        func configureField(_ tf: NSTextField, placeholder: String) {
+            tf.placeholderString = placeholder
+            tf.alignment = .right
+            tf.translatesAutoresizingMaskIntoConstraints = false
+            tf.widthAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
+            tf.delegate = self
+        }
+
+        [scaleXField, scaleYField, skewXField, skewYField].forEach { configureField($0, placeholder: "") }
+
+        let grid = NSGridView(views: [
+            [label("Scale X (%):"), scaleXField],
+            [label("Scale Y (%):"), scaleYField],
+            [label("Skew X (°):"),  skewXField],
+            [label("Skew Y (°):"),  skewYField],
+        ])
+        grid.rowSpacing = 8
+        grid.columnSpacing = 12
+        grid.column(at: 0).xPlacement = .trailing
+        grid.column(at: 1).xPlacement = .fill
+
+        // Buttons row
+        let ok = NSButton(title: "OK", target: self, action: #selector(tapOK))
+        let cancel = NSButton(title: "Cancel", target: self, action: #selector(tapCancel))
+        let spring = NSView()
+        let btnRow = NSStackView(views: [spring, keepAspect, cancel, ok])
+        btnRow.orientation = .horizontal
+        btnRow.alignment = .centerY
+        btnRow.spacing = 8
+
+        // Root stack
+        let root = NSStackView(views: [grid, btnRow])
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = 16
+        root.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        root.translatesAutoresizingMaskIntoConstraints = false
+
+        let content = NSView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(root)
+        panel.contentView = content
+
+        NSLayoutConstraint.activate([
+            root.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            root.topAnchor.constraint(equalTo: content.topAnchor),
+            root.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            content.widthAnchor.constraint(greaterThanOrEqualToConstant: 420),
+            content.heightAnchor.constraint(greaterThanOrEqualToConstant: 220),
+        ])
+    }
+
+    // Mirror X% to Y% when "Maintain aspect" is on
+    func controlTextDidChange(_ obj: Notification) {
+        guard obj.object as AnyObject? === scaleXField, keepAspect.state == .on else { return }
+        scaleYField.stringValue = scaleXField.stringValue
+    }
+
+    @objc private func tapOK() {
+        guard let panel = window, let parent = panel.sheetParent else { return }
+        let sx = clamp(Int(scaleXField.stringValue) ?? 100, min: 1, max: 800)
+        let sy = clamp(Int(scaleYField.stringValue) ?? 100, min: 1, max: 800)
+        let kx = clamp(Int(skewXField.stringValue) ?? 0,   min: -89, max: 89)
+        let ky = clamp(Int(skewYField.stringValue) ?? 0,   min: -89, max: 89)
+        parent.endSheet(panel, returnCode: .OK)
+        panel.orderOut(nil)
+        onApply(sx, sy, kx, ky)
+    }
+
+    @objc private func tapCancel() {
+        guard let panel = window, let parent = panel.sheetParent else { return }
+        parent.endSheet(panel, returnCode: .cancel)
+        panel.orderOut(nil)
+    }
+
+    private func clamp(_ v: Int, min: Int, max: Int) -> Int { Swift.max(min, Swift.min(max, v)) }
+}
+
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
 
     var window: NSWindow?
     private var currentDocumentURL: URL?
+    private var isDrawOpaque: Bool = true
+    private var flipRotateWC: FlipRotateSheetController?
+    private var stretchSkewWC: StretchSkewSheetController?
 
     // MARK: - App lifecycle
 
@@ -22,6 +269,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+
+        // Disable automatic window tabbing so View > Tab Bar items won't appear
+        if #available(macOS 10.12, *) {
+            NSWindow.allowsAutomaticWindowTabbing = false
+        }
         constructMenuBar()
 
         // Create the main window
@@ -53,6 +305,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         win.center()
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        canvasView()?.drawOpaque = isDrawOpaque
     }
 
     // MARK: - Menu bar
@@ -194,8 +447,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         viewItem.submenu = viewMenu
         main.addItem(viewItem)
 
+        // ===== Image =====
+        let imageItem = NSMenuItem(title: "Image", action: nil, keyEquivalent: "")
+        let imageMenu = NSMenu(title: "Image")
+
+        func addImage(_ title: String, _ sel: Selector?, _ key: String = "", _ mods: NSEvent.ModifierFlags = []) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: sel, keyEquivalent: key)
+            item.keyEquivalentModifierMask = mods
+            item.target = self
+            imageMenu.addItem(item)
+            return item
+        }
+
+        addImage("Flip/Rotate…",  #selector(imageFlipRotate(_:)))
+        addImage("Stretch/Skew…", #selector(imageStretchSkew(_:)))
+        imageMenu.addItem(NSMenuItem.separator())
+        addImage("Invert Colors", #selector(imageInvertColors(_:)))
+        addImage("Attributes…",   #selector(imageAttributes(_:)))
+        imageMenu.addItem(NSMenuItem.separator())
+        addImage("Clear Image",   #selector(imageClear(_:)))
+
+        // Draw Opaque (toggle)
+        let opaqueItem = addImage("Draw Opaque", #selector(imageToggleDrawOpaque(_:)))
+        opaqueItem.state = isDrawOpaque ? .on : .off
+
+        imageItem.submenu = imageMenu
+        main.addItem(imageItem)
+
         // ===== Placeholders =====
-        main.addItem(makeEmptyMenu(title: "Image"))
         main.addItem(makeEmptyMenu(title: "Options"))
         main.addItem(makeEmptyMenu(title: "Help"))
 
@@ -303,6 +582,70 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         w.center()
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - Image menu actions
+
+    @objc func imageFlipRotate(_ sender: Any?) {
+        guard let win = NSApp.keyWindow,
+              let canvas = findCanvasView()
+        else { return }
+
+        let c = FlipRotateSheetController { [weak canvas] flipH, flipV, deg in
+            canvas?.applyFlipRotate(flipHorizontal: flipH, flipVertical: flipV, rotationDegrees: deg)
+        }
+        self.flipRotateWC = c
+        guard let sheet = c.window else { return }
+        win.beginSheet(sheet) { [weak self] _ in
+            self?.flipRotateWC = nil
+        }
+    }
+
+    @objc func imageStretchSkew(_ sender: Any?) {
+        guard let win = NSApp.keyWindow,
+              let canvas = findCanvasView()
+        else { return }
+
+        let c = StretchSkewSheetController { [weak canvas] sx, sy, kx, ky in
+            canvas?.applyStretchSkew(scaleXPercent: sx, scaleYPercent: sy, skewXDegrees: kx, skewYDegrees: ky)
+        }
+        self.stretchSkewWC = c
+        guard let sheet = c.window else { return }
+        win.beginSheet(sheet) { [weak self] _ in
+            self?.stretchSkewWC = nil
+        }
+    }
+
+    @objc private func imageInvertColors(_ sender: Any?) {
+        guard let canvas = canvasView(), let src = canvas.canvasImage else { return }
+        guard let inv = src.invertedRGB() else { NSSound.beep(); return }
+        canvas.canvasImage = inv
+        canvas.needsDisplay = true
+    }
+
+    @objc private func imageAttributes(_ sender: Any?) {
+        // Reuse your existing size dialog (Edit > Set Canvas Size…)
+        editSetCanvasSize(sender)
+    }
+
+    @objc private func imageClear(_ sender: Any?) {
+        guard let canvas = canvasView() else { return }
+        let s = canvas.canvasRect.size
+        let img = NSImage(size: s)
+        img.lockFocus()
+        NSColor.white.setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: s)).fill()
+        img.unlockFocus()
+
+        canvas.canvasImage = img
+        canvas.needsDisplay = true
+    }
+
+    @objc private func imageToggleDrawOpaque(_ sender: NSMenuItem) {
+        isDrawOpaque.toggle()
+        sender.state = isDrawOpaque ? .on : .off
+        // Propagate to CanvasView if you expose a property
+        canvasView()?.setDrawOpaqueIfAvailable(isDrawOpaque)
     }
 
     // MARK: - Edit actions
@@ -836,3 +1179,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+extension NSImage {
+    func invertedRGB() -> NSImage? {
+        guard let rep = rgba8Bitmap(), let data = rep.bitmapData else { return nil }
+        let w = rep.pixelsWide, h = rep.pixelsHigh
+        let spp = rep.samplesPerPixel   // 4
+        let bpr = rep.bytesPerRow
+
+        for y in 0..<h {
+            let row = data.advanced(by: y * bpr)
+            for x in 0..<w {
+                let p = row.advanced(by: x * spp)
+                p[0] = 255 &- p[0]   // R
+                p[1] = 255 &- p[1]   // G
+                p[2] = 255 &- p[2]   // B
+                // p[3] alpha unchanged
+            }
+        }
+        let out = NSImage(size: size)
+        out.addRepresentation(rep)
+        return out
+    }
+}
