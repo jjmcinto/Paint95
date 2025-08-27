@@ -1,5 +1,200 @@
 // ViewController.swift
 import Cocoa
+import AppKit
+
+extension Notification.Name {
+    /// Broadcast when a new palette is loaded; object is [NSColor]
+    static let paletteLoaded = Notification.Name("Paint95PaletteLoaded")
+}
+
+extension ViewController {
+
+    // MARK: Options ▸ Colours…
+    @IBAction func optionsColours(_ sender: Any?) {
+        // Reuse your existing programmatic colour window
+        canvasView?.showColourSelectionWindow()
+    }
+
+    // MARK: Options ▸ Get Colours…
+    @IBAction func optionsGetColours(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.title = "Get Colours"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedFileTypes = ["gpl", "pal", "clr"]  // GIMP, JASC/Windows PAL, Apple Color List
+
+        let present: (NSOpenPanel) -> Void = { p in
+            p.beginSheetModal(for: self.view.window ?? NSApp.mainWindow ?? NSWindow()) { [weak self] resp in
+                guard resp == .OK, let url = p.url else { return }
+                self?.importPalette(from: url)
+            }
+        }
+
+        if let w = view.window {
+            panel.beginSheetModal(for: w) { [weak self] resp in
+                guard resp == .OK, let url = panel.url else { return }
+                self?.importPalette(from: url)
+            }
+        } else {
+            if panel.runModal() == .OK, let url = panel.url {
+                importPalette(from: url)
+            }
+        }
+    }
+
+    // MARK: - Palette import + fan-out
+    private func importPalette(from url: URL) {
+        do {
+            let colors = try PaletteImporter.importPalette(url: url)
+            if colors.isEmpty {
+                presentErrorAlert(title: "No Colours Found",
+                                  message: "The file didn’t contain any usable colours.")
+                return
+            }
+
+            // Broadcast to whoever owns/draws the palette strip
+            NotificationCenter.default.post(name: .paletteLoaded, object: colors)
+
+            // (Optional) Keep a shared copy for later use if you have a global store.
+            // SharedPalette.colours = colors
+
+        } catch {
+            presentErrorAlert(title: "Couldn’t Load Colours",
+                              message: "\(error.localizedDescription)\n\nFile: \(url.lastPathComponent)")
+        }
+    }
+
+    private func presentErrorAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        if let w = view.window {
+            alert.beginSheetModal(for: w, completionHandler: nil)
+        } else {
+            alert.runModal()
+        }
+    }
+}
+
+enum PaletteImporter {
+    enum ImportError: LocalizedError {
+        case unsupportedType
+        case parseFailure(String)
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedType:
+                return "Unsupported palette type."
+            case .parseFailure(let why):
+                return "Couldn’t parse palette: \(why)"
+            }
+        }
+    }
+
+    static func importPalette(url: URL) throws -> [NSColor] {
+        switch url.pathExtension.lowercased() {
+        case "gpl":
+            return try loadGimpGPL(url: url)
+        case "pal":
+            // Tries JASC-PAL (text). If you need RIFF PAL later, add a second parser here.
+            return try loadJASCPAL(url: url)
+        case "clr":
+            return try loadAppleCLR(url: url)
+        default:
+            throw ImportError.unsupportedType
+        }
+    }
+
+    // MARK: GIMP .gpl (text)
+    private static func loadGimpGPL(url: URL) throws -> [NSColor] {
+        let text = try String(contentsOf: url, encoding: .utf8)
+        var colors: [NSColor] = []
+        for raw in text.components(separatedBy: .newlines) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { continue }
+            if line.hasPrefix("#") { continue }
+            if line.lowercased().hasPrefix("gimp palette") { continue }
+            if line.lowercased().hasPrefix("name:") { continue }
+            if line.lowercased().hasPrefix("columns:") { continue }
+
+            // Lines like: "R G B  OptionalName"
+            let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            guard parts.count >= 3,
+                  let r = Int(parts[0]),
+                  let g = Int(parts[1]),
+                  let b = Int(parts[2]) else { continue }
+
+            colors.append(NSColor(calibratedRed: CGFloat(r)/255.0,
+                                  green: CGFloat(g)/255.0,
+                                  blue: CGFloat(b)/255.0,
+                                  alpha: 1.0))
+        }
+        return colors
+    }
+
+    // MARK: JASC-PAL (text)
+    // Format:
+    //   JASC-PAL
+    //   0100
+    //   <count>
+    //   R G B
+    //   R G B
+    //   ...
+    private static func loadJASCPAL(url: URL) throws -> [NSColor] {
+        let text = try String(contentsOf: url, encoding: .ascii)
+        var lines = text.components(separatedBy: .newlines).map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        lines = lines.filter { !$0.isEmpty }
+
+        guard lines.count >= 3 else {
+            throw ImportError.parseFailure("Too few lines for JASC-PAL.")
+        }
+        guard lines[0].uppercased() == "JASC-PAL" else {
+            throw ImportError.parseFailure("Missing JASC-PAL header.")
+        }
+        // Some files say 0100 or 0101; we accept both
+        guard lines[1] == "0100" || lines[1] == "0101" else {
+            throw ImportError.parseFailure("Unsupported JASC version \(lines[1]).")
+        }
+        guard let count = Int(lines[2]), count >= 0 else {
+            throw ImportError.parseFailure("Invalid colour count.")
+        }
+
+        var colors: [NSColor] = []
+        for i in 0..<min(count, max(0, lines.count - 3)) {
+            let parts = lines[3 + i].split(whereSeparator: { $0 == " " || $0 == "\t" })
+            guard parts.count >= 3,
+                  let r = Int(parts[0]),
+                  let g = Int(parts[1]),
+                  let b = Int(parts[2]) else { continue }
+
+            colors.append(NSColor(calibratedRed: CGFloat(r)/255.0,
+                                  green: CGFloat(g)/255.0,
+                                  blue: CGFloat(b)/255.0,
+                                  alpha: 1.0))
+        }
+        return colors
+    }
+
+    // MARK: Apple Color List .clr
+    private static func loadAppleCLR(url: URL) throws -> [NSColor] {
+        // Old but reliable initializer on macOS for reading .clr from disk
+        guard let list = NSColorList(name: NSColorList.Name(url.deletingPathExtension().lastPathComponent),
+                                     fromFile: url.path) else {
+            throw ImportError.parseFailure("Couldn’t read .clr color list.")
+        }
+        var colors: [NSColor] = []
+        for key in list.allKeys {
+            if let c = list.color(withKey: key)?.usingColorSpace(.deviceRGB) {
+                colors.append(c)
+            }
+        }
+        return colors
+    }
+}
 
 class ViewController: NSViewController, ToolbarDelegate, ColourPaletteDelegate, CanvasViewDelegate, ToolSizeSelectorDelegate {
     
@@ -242,34 +437,48 @@ class ViewController: NSViewController, ToolbarDelegate, ColourPaletteDelegate, 
         colourPaletteView.removeFromSuperview()
         colourPaletteView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(colourPaletteView)
-        
+
         NSLayoutConstraint.activate([
+            // Left edge just right of the fixed left column
             colourPaletteView.leadingAnchor.constraint(equalTo: leftColumn.trailingAnchor, constant: 8),
-            colourPaletteView.topAnchor.constraint(equalTo: signatureLabel.bottomAnchor, constant: kGapSigToPalette),
+
+            // Align the palette's bottom with the same baseline the tool-size bar uses
+            colourPaletteView.bottomAnchor.constraint(equalTo: statusBarField.topAnchor, constant: -kGapStripToStatus),
+
+            // Keep the palette a fixed height
             colourPaletteView.heightAnchor.constraint(equalToConstant: kPaletteHeight),
-            // leave some room on the right for the size strip
-            colourPaletteView.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -180)
+
+            // Leave some room on the right for the size strip
+            colourPaletteView.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -180),
+
+            // Ensure it never overlaps the signature (acts as a ceiling)
+            colourPaletteView.topAnchor.constraint(greaterThanOrEqualTo: signatureLabel.bottomAnchor, constant: kGapSigToPalette)
         ])
-        
+
         colourPaletteView.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         colourPaletteView.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
     }
-    
+
     private func placeToolSizeStripRightOfPalette() {
         let strip = ToolSizeSelectorView()
         strip.translatesAutoresizingMaskIntoConstraints = false
         strip.delegate = self
+        strip.selectedSize = canvasView.toolSize
         view.addSubview(strip)
         toolSizeSelectorView = strip
-        
+
         NSLayoutConstraint.activate([
+            // Sits to the right of the palette
             strip.leadingAnchor.constraint(equalTo: colourPaletteView.trailingAnchor, constant: 8),
             strip.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-            strip.topAnchor.constraint(equalTo: colourPaletteView.bottomAnchor, constant: kGapPaletteToStrip),
-            strip.heightAnchor.constraint(equalToConstant: kStripHeight),
-            strip.bottomAnchor.constraint(equalTo: statusBarField.topAnchor, constant: -kGapStripToStatus)
+
+            // Align bottoms with the palette (shared baseline above status bar)
+            strip.bottomAnchor.constraint(equalTo: statusBarField.topAnchor, constant: -kGapStripToStatus),
+
+            // Fixed height for the strip
+            strip.heightAnchor.constraint(equalToConstant: kStripHeight)
         ])
-        
+
         strip.setContentHuggingPriority(.defaultLow, for: .horizontal)
         strip.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     }

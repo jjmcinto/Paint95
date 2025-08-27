@@ -6,74 +6,99 @@ protocol ToolSizeSelectorDelegate: AnyObject {
 }
 
 class ToolSizeSelectorView: NSView {
-    //@IBOutlet weak var delegate: ToolSizeSelectorDelegate?
     weak var delegate: ToolSizeSelectorDelegate?
-    //var delegate: ToolSizeSelectorDelegate?
-    var retainedSelf: ToolSizeSelectorView?
 
+    /// Brush sizes in *pixels*. Circles are drawn at this diameter (clamped to fit the cell).
     let sizes: [CGFloat] = [1, 3, 5, 7, 9]
-    var selectedSize: CGFloat = 1
-    
+
+    /// Currently selected size (in px).
+    var selectedSize: CGFloat = 1 {
+        didSet { needsDisplay = true }
+    }
+
+    // Layout tuning
+    private let vPad: CGFloat = 4        // vertical padding inside each cell
+    private let hPad: CGFloat = 6        // horizontal padding inside each cell
+    private let cellSpacing: CGFloat = 8 // spacing between cells (visual breathing room)
+
     deinit {
         print("ToolSizeSelectorView deinitialized")
-    }
-    
-    override func removeFromSuperview() {
-        super.removeFromSuperview()
-    }
-    
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        retainedSelf = self  // Retaining reference during debug
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
     }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
-        let buttonWidth: CGFloat = bounds.width / CGFloat(sizes.count)
-        let buttonHeight: CGFloat = bounds.height
+        // Background
+        NSColor.windowBackgroundColor.setFill()
+        bounds.fill()
+
+        guard !sizes.isEmpty else { return }
+
+        // Compute per-cell width with spacing
+        let totalSpacing = cellSpacing * CGFloat(max(0, sizes.count - 1))
+        let cellW = max(28, floor((bounds.width - totalSpacing) / CGFloat(sizes.count)))
+        let cellH = bounds.height
 
         for (i, size) in sizes.enumerated() {
-            let x = CGFloat(i) * buttonWidth
-            let rect = NSRect(x: x, y: 0, width: buttonWidth, height: buttonHeight)
+            let x0 = CGFloat(i) * (cellW + cellSpacing)
+            let cell = NSRect(x: x0, y: 0, width: cellW, height: cellH)
 
-            // Draw background
-            if size == selectedSize {
-                NSColor.selectedControlColor.setFill()
-            } else {
-                NSColor(white: 0.9, alpha: 1.0).setFill()
+            // Cell background (subtle)
+            NSColor.controlBackgroundColor.setFill()
+            cell.fill()
+
+            // Selection ring
+            if abs(size - selectedSize) < 0.5 {
+                NSColor.controlAccentColor.setStroke()
+                let ring = cell.insetBy(dx: 1, dy: 1)
+                let ringPath = NSBezierPath(roundedRect: ring, xRadius: 4, yRadius: 4)
+                ringPath.lineWidth = 2
+                ringPath.stroke()
             }
-            rect.fill()
 
-            // Draw size indicator circle
-            NSColor.black.setFill()
-            let dotSize = size
-            let dotRect = NSRect(
-                x: rect.midX - dotSize/2,
-                y: rect.midY - dotSize/2,
-                width: dotSize,
-                height: dotSize
+            // Circle diameter = brush size (clamped to fit comfortably)
+            let maxDia = max(1, min(size, min(cellH - 2*vPad, cellW - 2*hPad)))
+            let circle = NSRect(
+                x: cell.midX - maxDia/2,
+                y: cell.midY - maxDia/2,
+                width: maxDia,
+                height: maxDia
             )
-            NSBezierPath(ovalIn: dotRect).fill()
+
+            // Draw the dot
+            NSColor.labelColor.setFill()
+            NSBezierPath(ovalIn: circle).fill()
+
+            // Thin outline for contrast on light backgrounds
+            NSColor.separatorColor.setStroke()
+            let outline = NSBezierPath(ovalIn: circle)
+            outline.lineWidth = 1
+            outline.stroke()
         }
     }
-    
-    // Ensure mouse events are handled properly and routed to the view
-    override func mouseDown(with event: NSEvent) {
-        let location = convert(event.locationInWindow, from: nil)
-        let buttonWidth: CGFloat = bounds.width / CGFloat(sizes.count)
-        let index = Int(location.x / buttonWidth)
-        
-        if sizes.indices.contains(index) {
-            selectedSize = sizes[index]
-            
-            delegate?.toolSizeSelected(selectedSize)
-            
-            setNeedsDisplay(bounds)
+
+    // Click or drag selects nearest cell
+    override func mouseDown(with event: NSEvent) { select(at: event) }
+    override func mouseDragged(with event: NSEvent) { select(at: event) }
+
+    private func select(at event: NSEvent) {
+        guard !sizes.isEmpty else { return }
+        let p = convert(event.locationInWindow, from: nil)
+
+        let totalSpacing = cellSpacing * CGFloat(max(0, sizes.count - 1))
+        let cellW = max(28, floor((bounds.width - totalSpacing) / CGFloat(sizes.count)))
+
+        // Map X to index considering spacing
+        let span = cellW + cellSpacing
+        var idx = Int(floor(p.x / span))
+        // Clicks within a cell's width choose that cell; clamp to valid range
+        idx = max(0, min(idx, sizes.count - 1))
+
+        let newSize = sizes[idx]
+        if abs(newSize - selectedSize) >= 0.5 {
+            selectedSize = newSize
+            delegate?.toolSizeSelected(newSize)
         }
+        needsDisplay = true
     }
 }

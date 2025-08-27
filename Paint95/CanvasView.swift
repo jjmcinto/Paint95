@@ -978,10 +978,11 @@ class CanvasView: NSView {
                 initializeCanvasIfNeeded()
                 canvasImage?.lockFocus()
                 currentColour.set()
-                let brushSize: CGFloat = 5
+                let brushSize = max(1, toolSize) // match selector size
                 let dotRect = NSRect(x: startPoint.x - brushSize/2,
                                      y: startPoint.y - brushSize/2,
-                                     width: brushSize, height: brushSize)
+                                     width: brushSize,
+                                     height: brushSize)
                 NSBezierPath(ovalIn: dotRect).fill()
                 canvasImage?.unlockFocus()
                 needsDisplay = true

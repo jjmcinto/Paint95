@@ -252,13 +252,16 @@ final class StretchSkewSheetController: NSWindowController, NSTextFieldDelegate 
 }
 
 @MainActor
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     var window: NSWindow?
     private var currentDocumentURL: URL?
     private var isDrawOpaque: Bool = true
     private var flipRotateWC: FlipRotateSheetController?
     private var stretchSkewWC: StretchSkewSheetController?
+
+    // Retain the Help Topics window so it doesn't deallocate while open
+    private var helpTopicsWC: NSWindowController?
 
     // MARK: - App lifecycle
 
@@ -344,8 +347,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         appMenu.addItem(NSMenuItem.separator())
 
-        let quit = NSMenuItem(title: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        quit.target = NSApp
+        let quit = NSMenuItem(title: "Quit \(appName)", action: #selector(fileExit(_:)), keyEquivalent: "q")
+        quit.target = self
         appMenu.addItem(quit)
 
         appItem.submenu = appMenu
@@ -474,9 +477,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         imageItem.submenu = imageMenu
         main.addItem(imageItem)
 
-        // ===== Placeholders =====
-        main.addItem(makeEmptyMenu(title: "Options"))
-        main.addItem(makeEmptyMenu(title: "Help"))
+        // ===== Options =====
+        let optionsItem = NSMenuItem(title: "Options", action: nil, keyEquivalent: "")
+        let optionsMenu = NSMenu(title: "Options")
+
+        let colours = NSMenuItem(title: "Colours…",
+                                 action: #selector(ViewController.optionsColours(_:)),
+                                 keyEquivalent: ",")
+        colours.keyEquivalentModifierMask = [.command]
+        colours.target = nil // use responder chain (ViewController implements the action)
+        optionsMenu.addItem(colours)
+
+        let getColours = NSMenuItem(title: "Get Colours…",
+                                    action: #selector(ViewController.optionsGetColours(_:)),
+                                    keyEquivalent: "")
+        getColours.target = nil
+        optionsMenu.addItem(getColours)
+
+        optionsItem.submenu = optionsMenu
+        main.addItem(optionsItem)
+
+        // ===== Help =====
+        let helpItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
+        let helpMenu = NSMenu(title: "Help")
+
+        let helpTopics = NSMenuItem(title: "Help Topics", action: #selector(showHelpTopics(_:)), keyEquivalent: "?")
+        helpTopics.keyEquivalentModifierMask = [.command, .shift]
+        helpTopics.target = self
+        helpMenu.addItem(helpTopics)
+
+        let aboutPaint = NSMenuItem(title: "About Paint", action: #selector(showAboutPaint(_:)), keyEquivalent: "")
+        aboutPaint.target = self
+        helpMenu.addItem(aboutPaint)
+
+        helpItem.submenu = helpMenu
+        main.addItem(helpItem)
 
         NSApp.mainMenu = main
     }
@@ -927,12 +962,58 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         doSave(to: url)
     }
 
+    // NEW: Prompt before destructive actions (New / Open / Exit)
     @objc func fileNew(_ sender: Any?) {
-        currentDocumentURL = nil
-        canvasView()?.clearCanvas()
+        // If nothing to lose, just clear
+        guard hasImageToPotentiallyLose() else {
+            currentDocumentURL = nil
+            canvasView()?.clearCanvas()
+            return
+        }
+
+        askToKeepCurrentImage { choice in
+            switch choice {
+            case .delete:
+                self.currentDocumentURL = nil
+                self.canvasView()?.clearCanvas()
+            case .save:
+                if self.performSaveAndReport() {
+                    self.currentDocumentURL = nil
+                    self.canvasView()?.clearCanvas()
+                }
+            case .cancel:
+                break
+            }
+        }
     }
 
     @objc func fileOpen(_ sender: Any?) {
+        let proceedToOpen = { [weak self] in
+            guard let self = self else { return }
+            self.showOpenPanelAndLoad()
+        }
+
+        guard hasImageToPotentiallyLose() else {
+            proceedToOpen()
+            return
+        }
+
+        askToKeepCurrentImage { choice in
+            switch choice {
+            case .delete:
+                proceedToOpen()
+            case .save:
+                if self.performSaveAndReport() {
+                    proceedToOpen()
+                }
+            case .cancel:
+                break
+            }
+        }
+    }
+
+    // Split out the actual Open… flow
+    private func showOpenPanelAndLoad() {
         let panel = NSOpenPanel()
         panel.title = "Open Image"
         panel.allowedFileTypes = ["png","jpg","jpeg","bmp","tiff","gif","heic"]
@@ -948,6 +1029,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             canvas.needsDisplay = true
 
             self?.currentDocumentURL = url
+        }
+    }
+
+    // Exit with prompt
+    @objc func fileExit(_ sender: Any?) {
+        // If nothing to lose, quit immediately
+        guard hasImageToPotentiallyLose() else {
+            NSApp.terminate(sender)
+            return
+        }
+
+        askToKeepCurrentImage { choice in
+            switch choice {
+            case .delete:
+                NSApp.terminate(sender)
+            case .save:
+                if self.performSaveAndReport() {
+                    NSApp.terminate(sender)
+                }
+            case .cancel:
+                break
+            }
         }
     }
 
@@ -1007,10 +1110,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func fileSetWallpaperCentered(_ sender: Any?) {
         guard confirmWallpaperChange() else { return }
         setDesktopWallpaper(mode: .centered)
-    }
-
-    @objc func fileExit(_ sender: Any?) {
-        NSApp.terminate(sender)
     }
 
     private enum WallpaperMode { case tiled, centered }
@@ -1176,6 +1275,147 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return image
         }
         return nil
+    }
+
+    // MARK: - Help menu
+
+    @objc private func showHelpTopics(_ sender: Any?) {
+        presentHelpTopicsWindow()
+    }
+
+    @objc private func showAboutPaint(_ sender: Any?) {
+        // Use the standard About panel (keeps things simple and localized)
+        NSApp.orderFrontStandardAboutPanel(sender)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func presentHelpTopicsWindow() {
+        // Create the window contents
+        let textView = NSTextView(frame: .zero)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.textContainerInset = NSSize(width: 12, height: 12)
+
+        let intro = """
+        Welcome to Paint95 Help
+
+        • Select a tool from the Tool Box on the left.
+        • Choose colours from the Colour Palette.
+        • Use the Image menu for Flip/Rotate, Stretch/Skew, Invert Colours, Attributes and more.
+        • Use Edit ▸ Set Canvas Size… to change the canvas dimensions.
+
+        Tips
+        • Hold ⇧ to constrain lines to 45° steps and to draw perfect squares/circles.
+        • Use the Select tool to move/resize pasted or selected regions.
+        • “Draw Opaque” controls whether white is treated as transparent when pasting.
+        """
+
+        let attr = NSMutableAttributedString(string: intro)
+        let p = NSMutableParagraphStyle()
+        p.lineSpacing = 2
+        attr.addAttributes([
+            .font: NSFont.systemFont(ofSize: 13),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: p
+        ], range: NSRange(location: 0, length: attr.length))
+        textView.textStorage?.setAttributedString(attr)
+
+        let scroll = NSScrollView(frame: .zero)
+        scroll.hasVerticalScroller = true
+        scroll.documentView = textView
+        scroll.drawsBackground = true
+        scroll.backgroundColor = .textBackgroundColor
+
+        let contentView = NSView()
+        contentView.translatesAutoresizingMaskIntoConstraints = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(scroll)
+
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: contentView.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+        ])
+
+        let win = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered, defer: false
+        )
+        win.title = "Help Topics"
+        win.contentView = contentView
+        win.center()
+        win.delegate = self
+
+        // Retain controller so window isn't deallocated while open
+        let wc = NSWindowController(window: win)
+        self.helpTopicsWC = wc
+        wc.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // Release retained Help Topics WC when closed
+    func windowWillClose(_ notification: Notification) {
+        if let w = notification.object as? NSWindow, w === helpTopicsWC?.window {
+            helpTopicsWC = nil
+        }
+    }
+
+    // MARK: - Save/Discard prompt before destructive actions
+
+    private enum DiscardChoice { case delete, save, cancel }
+
+    /// Return true if there's any canvas content worth prompting for.
+    private func hasImageToPotentiallyLose() -> Bool {
+        guard let canvas = canvasView() else { return false }
+        return (canvas.canvasImage != nil)
+    }
+
+    /// Present "Do you want to keep the current image?" with Delete (far left) / Cancel / Save (far right).
+    private func askToKeepCurrentImage(completion handler: @escaping (DiscardChoice) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "Do you want to keep the current image?"
+        alert.informativeText = "If you delete, the current image will be lost."
+        alert.alertStyle = .warning
+
+        // Order of addButton determines layout on macOS (first = rightmost).
+        // Add in reverse of the desired left→right order so that:
+        //   Rightmost: Save (default)
+        //   Middle-right: Cancel (escape)
+        //   Far left: Delete
+        let saveButton   = alert.addButton(withTitle: "Save")   // .alertFirstButtonReturn (rightmost)
+        let cancelButton = alert.addButton(withTitle: "Cancel") // .alertSecondButtonReturn
+        let _            = alert.addButton(withTitle: "Delete") // .alertThirdButtonReturn (leftmost)
+
+        // Keys
+        saveButton.keyEquivalent = "\r"     // Return triggers Save
+        cancelButton.keyEquivalent = "\u{1b}" // Escape triggers Cancel
+
+        let handle: (NSApplication.ModalResponse) -> Void = { resp in
+            switch resp {
+            case .alertFirstButtonReturn:  handler(.save)   // Save (rightmost)
+            case .alertSecondButtonReturn: handler(.cancel) // Cancel (middle-right)
+            case .alertThirdButtonReturn:  handler(.delete) // Delete (far left)
+            default:                       handler(.cancel)
+            }
+        }
+
+        if let w = self.window {
+            alert.beginSheetModal(for: w, completionHandler: handle)
+        } else {
+            handle(alert.runModal())
+        }
+    }
+
+    /// Kick off a save and report whether it appears to have completed (best-effort).
+    private func performSaveAndReport() -> Bool {
+        let hadURL = currentDocumentURL
+        fileSave(nil) // may invoke Save As… synchronously in our implementation
+
+        // If we didn't have a URL going in and still don't have one, assume cancelled.
+        if hadURL == nil && currentDocumentURL == nil { return false }
+        return true
     }
 }
 
