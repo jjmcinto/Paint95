@@ -494,6 +494,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         getColours.target = nil
         optionsMenu.addItem(getColours)
 
+        optionsMenu.addItem(NSMenuItem.separator())
+
+        // NEW: Save / Restore
+        let saveColours = NSMenuItem(title: "Save Colours…",
+                                     action: #selector(optionsSaveColours(_:)),
+                                     keyEquivalent: "")
+        saveColours.target = self
+        optionsMenu.addItem(saveColours)
+
+        let restoreDefaults = NSMenuItem(title: "Restore Default Colours",
+                                         action: #selector(optionsRestoreDefaultColours(_:)),
+                                         keyEquivalent: "")
+        restoreDefaults.target = self
+        optionsMenu.addItem(restoreDefaults)
+
         optionsItem.submenu = optionsMenu
         main.addItem(optionsItem)
 
@@ -1379,24 +1394,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alert.informativeText = "If you delete, the current image will be lost."
         alert.alertStyle = .warning
 
-        // Order of addButton determines layout on macOS (first = rightmost).
-        // Add in reverse of the desired left→right order so that:
-        //   Rightmost: Save (default)
-        //   Middle-right: Cancel (escape)
-        //   Far left: Delete
-        let saveButton   = alert.addButton(withTitle: "Save")   // .alertFirstButtonReturn (rightmost)
-        let cancelButton = alert.addButton(withTitle: "Cancel") // .alertSecondButtonReturn
-        let _            = alert.addButton(withTitle: "Delete") // .alertThirdButtonReturn (leftmost)
+        // Add in reverse so rightmost is Save (default), then Cancel, then far-left Delete
+        let saveButton   = alert.addButton(withTitle: "Save")     // rightmost
+        let cancelButton = alert.addButton(withTitle: "Cancel")   // middle-right
+        _ = alert.addButton(withTitle: "Delete")                  // leftmost
 
-        // Keys
-        saveButton.keyEquivalent = "\r"     // Return triggers Save
-        cancelButton.keyEquivalent = "\u{1b}" // Escape triggers Cancel
+        saveButton.keyEquivalent = "\r"
+        cancelButton.keyEquivalent = "\u{1b}"
 
         let handle: (NSApplication.ModalResponse) -> Void = { resp in
             switch resp {
-            case .alertFirstButtonReturn:  handler(.save)   // Save (rightmost)
-            case .alertSecondButtonReturn: handler(.cancel) // Cancel (middle-right)
-            case .alertThirdButtonReturn:  handler(.delete) // Delete (far left)
+            case .alertFirstButtonReturn:  handler(.save)   // Save
+            case .alertSecondButtonReturn: handler(.cancel) // Cancel
+            case .alertThirdButtonReturn:  handler(.delete) // Delete
             default:                       handler(.cancel)
             }
         }
@@ -1416,6 +1426,59 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // If we didn't have a URL going in and still don't have one, assume cancelled.
         if hadURL == nil && currentDocumentURL == nil { return false }
         return true
+    }
+
+    // MARK: - Options menu actions (NEW)
+
+    @objc func optionsSaveColours(_ sender: Any?) {
+        guard let vc = vc() else { return }
+        let colors = vc.colourPaletteView.colours   // 16 swatches
+
+        let panel = NSSavePanel()
+        panel.title = "Save Colours"
+        panel.allowedFileTypes = ["gpl", "pal", "clr"]
+        panel.allowsOtherFileTypes = false
+        panel.nameFieldStringValue = "Palette.gpl"  // default suggestion
+
+        guard panel.runModal() == .OK, var url = panel.url else { return }
+
+        // Ensure file has an extension (default to .gpl if user omits)
+        let ext = url.pathExtension.lowercased()
+        let chosenExt: String = ext.isEmpty ? "gpl" : ext
+        if ext.isEmpty {
+            url.deletePathExtension()
+            url.appendPathExtension(chosenExt)
+        }
+
+        do {
+            switch chosenExt {
+            case "gpl":
+                try AppPaletteExporter.saveGPL(colors, to: url)
+            case "pal":
+                try AppPaletteExporter.saveJASCPAL(colors, to: url)
+            case "clr":
+                try AppPaletteExporter.saveCLR(colors, to: url)
+            default:
+                throw AppPaletteExporter.Error.unsupportedType
+            }
+        } catch {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Couldn’t Save Colours"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+        }
+    }
+
+    @objc func optionsRestoreDefaultColours(_ sender: Any?) {
+        // Broadcast the classic default 16; ColourPaletteView listens for .paletteLoaded.
+        let defaults: [NSColor] = [
+            .black, .darkGray, .gray, .white,
+            .red, .green, .blue, .cyan,
+            .yellow, .magenta, .orange, .brown,
+            .systemPink, .systemIndigo, .systemTeal, .systemPurple
+        ]
+        NotificationCenter.default.post(name: .paletteLoaded, object: defaults)
     }
 }
 
@@ -1441,3 +1504,67 @@ extension NSImage {
         return out
     }
 }
+
+// MARK: - Local palette exporter (kept in this file to avoid external deps)
+private enum AppPaletteExporter {
+    enum Error: LocalizedError {
+        case unsupportedType
+        case writeFailed(String)
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedType: return "Unsupported palette type."
+            case .writeFailed(let why): return "Write failed: \(why)"
+            }
+        }
+    }
+
+    // GIMP .gpl
+    static func saveGPL(_ colors: [NSColor], to url: URL) throws {
+        var out = "GIMP Palette\nName: Paint95 Export\nColumns: 16\n#\n"
+        for c in colors {
+            let (r,g,b) = rgb255(c)
+            out += String(format: "%3d %3d %3d\tColor\n", r, g, b)
+        }
+        do {
+            try out.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            throw Error.writeFailed(error.localizedDescription)
+        }
+    }
+
+    // JASC-PAL text
+    static func saveJASCPAL(_ colors: [NSColor], to url: URL) throws {
+        var out = "JASC-PAL\n0100\n\(colors.count)\n"
+        for c in colors {
+            let (r,g,b) = rgb255(c)
+            out += "\(r) \(g) \(b)\n"
+        }
+        do {
+            try out.write(to: url, atomically: true, encoding: .ascii)
+        } catch {
+            throw Error.writeFailed(error.localizedDescription)
+        }
+    }
+
+    // Apple .clr
+    static func saveCLR(_ colors: [NSColor], to url: URL) throws {
+        let base = url.deletingPathExtension().lastPathComponent
+        let name = NSColorList.Name(base.isEmpty ? "Paint95 Export" : base)
+        let list = NSColorList(name: name)
+        for (i, c) in colors.enumerated() {
+            list.setColor(c.usingColorSpace(.deviceRGB) ?? c, forKey: "Color \(i+1)")
+        }
+        if !list.write(toFile: url.path) {
+            throw Error.writeFailed("NSColorList write failed.")
+        }
+    }
+
+    private static func rgb255(_ c: NSColor) -> (Int, Int, Int) {
+        let d = c.usingColorSpace(.deviceRGB) ?? c
+        let r = Int(round(d.redComponent   * 255))
+        let g = Int(round(d.greenComponent * 255))
+        let b = Int(round(d.blueComponent  * 255))
+        return (max(0,min(255,r)), max(0,min(255,g)), max(0,min(255,b)))
+    }
+}
+

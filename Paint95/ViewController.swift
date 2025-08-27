@@ -85,77 +85,55 @@ enum PaletteImporter {
         case parseFailure(String)
         var errorDescription: String? {
             switch self {
-            case .unsupportedType:
-                return "Unsupported palette type."
-            case .parseFailure(let why):
-                return "Couldn’t parse palette: \(why)"
+            case .unsupportedType:            return "Unsupported palette type."
+            case .parseFailure(let why):      return "Couldn’t parse palette: \(why)"
             }
         }
     }
 
     static func importPalette(url: URL) throws -> [NSColor] {
         switch url.pathExtension.lowercased() {
-        case "gpl":
-            return try loadGimpGPL(url: url)
-        case "pal":
-            // Tries JASC-PAL (text). If you need RIFF PAL later, add a second parser here.
-            return try loadJASCPAL(url: url)
-        case "clr":
-            return try loadAppleCLR(url: url)
-        default:
-            throw ImportError.unsupportedType
+        case "gpl": return try loadGimpGPL(url: url)
+        case "pal": return try loadJASCPAL(url: url)       // JASC-PAL text
+        case "clr": return try loadAppleCLR(url: url)
+        default:    throw ImportError.unsupportedType
         }
     }
 
-    // MARK: GIMP .gpl (text)
+    // GIMP .gpl
     private static func loadGimpGPL(url: URL) throws -> [NSColor] {
         let text = try String(contentsOf: url, encoding: .utf8)
         var colors: [NSColor] = []
         for raw in text.components(separatedBy: .newlines) {
             let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.isEmpty { continue }
-            if line.hasPrefix("#") { continue }
-            if line.lowercased().hasPrefix("gimp palette") { continue }
-            if line.lowercased().hasPrefix("name:") { continue }
-            if line.lowercased().hasPrefix("columns:") { continue }
+            if line.isEmpty || line.hasPrefix("#") { continue }
+            let low = line.lowercased()
+            if low.hasPrefix("gimp palette") || low.hasPrefix("name:") || low.hasPrefix("columns:") { continue }
 
-            // Lines like: "R G B  OptionalName"
+            // "R G B [optional name]"
             let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
             guard parts.count >= 3,
-                  let r = Int(parts[0]),
-                  let g = Int(parts[1]),
-                  let b = Int(parts[2]) else { continue }
+                  let r = Int(parts[0]), let g = Int(parts[1]), let b = Int(parts[2]) else { continue }
 
-            colors.append(NSColor(calibratedRed: CGFloat(r)/255.0,
-                                  green: CGFloat(g)/255.0,
-                                  blue: CGFloat(b)/255.0,
-                                  alpha: 1.0))
+            colors.append(NSColor(srgbRed: CGFloat(r)/255.0,
+                                  green:  CGFloat(g)/255.0,
+                                  blue:   CGFloat(b)/255.0,
+                                  alpha:  1.0))
         }
         return colors
     }
 
-    // MARK: JASC-PAL (text)
-    // Format:
-    //   JASC-PAL
-    //   0100
-    //   <count>
-    //   R G B
-    //   R G B
-    //   ...
+    // JASC-PAL (text)
     private static func loadJASCPAL(url: URL) throws -> [NSColor] {
         let text = try String(contentsOf: url, encoding: .ascii)
-        var lines = text.components(separatedBy: .newlines).map {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        lines = lines.filter { !$0.isEmpty }
+        var lines = text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
 
-        guard lines.count >= 3 else {
-            throw ImportError.parseFailure("Too few lines for JASC-PAL.")
-        }
+        guard lines.count >= 3 else { throw ImportError.parseFailure("Too few lines for JASC-PAL.") }
         guard lines[0].uppercased() == "JASC-PAL" else {
             throw ImportError.parseFailure("Missing JASC-PAL header.")
         }
-        // Some files say 0100 or 0101; we accept both
         guard lines[1] == "0100" || lines[1] == "0101" else {
             throw ImportError.parseFailure("Unsupported JASC version \(lines[1]).")
         }
@@ -167,33 +145,115 @@ enum PaletteImporter {
         for i in 0..<min(count, max(0, lines.count - 3)) {
             let parts = lines[3 + i].split(whereSeparator: { $0 == " " || $0 == "\t" })
             guard parts.count >= 3,
-                  let r = Int(parts[0]),
-                  let g = Int(parts[1]),
-                  let b = Int(parts[2]) else { continue }
+                  let r = Int(parts[0]), let g = Int(parts[1]), let b = Int(parts[2]) else { continue }
 
-            colors.append(NSColor(calibratedRed: CGFloat(r)/255.0,
-                                  green: CGFloat(g)/255.0,
-                                  blue: CGFloat(b)/255.0,
-                                  alpha: 1.0))
+            colors.append(NSColor(srgbRed: CGFloat(r)/255.0,
+                                  green:  CGFloat(g)/255.0,
+                                  blue:   CGFloat(b)/255.0,
+                                  alpha:  1.0))
         }
         return colors
     }
 
-    // MARK: Apple Color List .clr
+    // Apple Color List .clr
     private static func loadAppleCLR(url: URL) throws -> [NSColor] {
-        // Old but reliable initializer on macOS for reading .clr from disk
         guard let list = NSColorList(name: NSColorList.Name(url.deletingPathExtension().lastPathComponent),
                                      fromFile: url.path) else {
             throw ImportError.parseFailure("Couldn’t read .clr color list.")
         }
         var colors: [NSColor] = []
         for key in list.allKeys {
-            if let c = list.color(withKey: key)?.usingColorSpace(.deviceRGB) {
+            // normalize to sRGB to avoid appearance / color-space drift
+            if let c = list.color(withKey: key)?.usingColorSpace(.sRGB) {
                 colors.append(c)
             }
         }
         return colors
     }
+}
+
+enum PaletteExporter {
+    enum Error: LocalizedError {
+        case unsupportedType
+        case writeFailed(String)
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedType:          return "Unsupported palette type."
+            case .writeFailed(let why):     return "Write failed: \(why)"
+            }
+        }
+    }
+
+    // MARK: .gpl (GIMP Palette)
+    // Writes 0–255 sRGB triplets. Uses Columns: 8 to match the UI’s 8×2 grid.
+    static func saveGPL(_ colors: [NSColor], to url: URL, name: String = "Paint95 Palette") throws {
+        var out = "GIMP Palette\n"
+        out += "Name: \(name)\n"
+        out += "Columns: 8\n"
+        out += "# Exported by Paint95\n"
+        for c in colors {
+            let (r,g,b) = srgb255(c)
+            out += String(format: "%3d %3d %3d\tColor\n", r, g, b)
+        }
+        do {
+            try out.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            throw Error.writeFailed(error.localizedDescription)
+        }
+    }
+
+    // MARK: JASC-PAL (text)
+    // Format:
+    //   JASC-PAL
+    //   0100
+    //   <count>
+    //   R G B
+    static func saveJASCPAL(_ colors: [NSColor], to url: URL) throws {
+        var out = "JASC-PAL\n0100\n\(colors.count)\n"
+        for c in colors {
+            let (r,g,b) = srgb255(c)
+            out += "\(r) \(g) \(b)\n"
+        }
+        do {
+            try out.write(to: url, atomically: true, encoding: .ascii)
+        } catch {
+            throw Error.writeFailed(error.localizedDescription)
+        }
+    }
+
+    // MARK: Apple .clr (NSColorList)
+    // Stores NSColors in the list *as sRGB* to avoid color-space drift later.
+    static func saveCLR(_ colors: [NSColor], to url: URL) throws {
+        let base = url.deletingPathExtension().lastPathComponent
+        let listName = base.isEmpty ? "Paint95 Palette" : base
+        let name = NSColorList.Name(listName)
+        let list = NSColorList(name: name)
+
+        for (i, c) in colors.enumerated() {
+            let key = "Color \(i + 1)"
+            list.setColor(c.usingColorSpace(.sRGB) ?? c, forKey: key)
+        }
+
+        // Legacy-but-reliable API for writing .clr to disk
+        if !list.write(toFile: url.path) {
+            throw Error.writeFailed("NSColorList write failed.")
+        }
+    }
+
+    // MARK: - Helpers
+
+    /// Convert any NSColor to 0–255 sRGB components with clamping+rounding.
+    private static func srgb255(_ c: NSColor) -> (Int, Int, Int) {
+        let s = c.usingColorSpace(.sRGB) ?? c.usingColorSpace(.deviceRGB) ?? c
+        let r = Int(round(s.redComponent   * 255.0)).clamped(0, 255)
+        let g = Int(round(s.greenComponent * 255.0)).clamped(0, 255)
+        let b = Int(round(s.blueComponent  * 255.0)).clamped(0, 255)
+        return (r, g, b)
+    }
+}
+
+private extension Comparable {
+    func clamped(_ lo: Self, _ hi: Self) -> Self { min(max(self, lo), hi) }
 }
 
 class ViewController: NSViewController, ToolbarDelegate, ColourPaletteDelegate, CanvasViewDelegate, ToolSizeSelectorDelegate {
