@@ -403,9 +403,6 @@ class ViewController: NSViewController, ToolbarDelegate, ColourPaletteDelegate, 
             colourSwatchView.heightAnchor.constraint(equalToConstant: 54)
         ])
         
-        // Give the toolbox a sane width inside the 101 column
-        toolbarView.widthAnchor.constraint(lessThanOrEqualToConstant: 100).isActive = true
-        
         // z-order to keep toolbox clickable
         view.addSubview(col, positioned: .above, relativeTo: nil)
     }
