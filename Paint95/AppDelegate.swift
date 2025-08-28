@@ -325,10 +325,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let about = NSMenuItem(
             title: "About \(appName)",
-            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+            action: #selector(showAboutPaint(_:)),
             keyEquivalent: ""
         )
-        about.target = NSApp
+        about.target = self
         appMenu.addItem(about)
         appMenu.addItem(NSMenuItem.separator())
 
@@ -1299,51 +1299,41 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func showAboutPaint(_ sender: Any?) {
-        // Use the standard About panel (keeps things simple and localized)
-        NSApp.orderFrontStandardAboutPanel(sender)
+        // Minimal, localized-friendly credits text
+        let credits = NSAttributedString(
+            string: "© 2025 Paint95 — Jeffrey McIntosh",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 12),
+                .foregroundColor: NSColor.labelColor
+            ]
+        )
+
+        // Use the standard About panel, but inject credits
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .credits: credits
+        ])
         NSApp.activate(ignoringOtherApps: true)
     }
 
     private func presentHelpTopicsWindow() {
-        // Create the window contents
-        let textView = NSTextView(frame: .zero)
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.textContainerInset = NSSize(width: 12, height: 12)
+        // ---- Window first so we know an initial content width ----
+        let win = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 560),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered, defer: false
+        )
+        win.title = "Help Topics"
+        win.center()
+        win.delegate = self
 
-        let intro = """
-        Welcome to Paint95 Help
-
-        • Select a tool from the Tool Box on the left.
-        • Choose colours from the Colour Palette.
-        • Use the Image menu for Flip/Rotate, Stretch/Skew, Invert Colours, Attributes and more.
-        • Use Edit ▸ Set Canvas Size… to change the canvas dimensions.
-
-        Tips
-        • Hold ⇧ to constrain lines to 45° steps and to draw perfect squares/circles.
-        • Use the Select tool to move/resize pasted or selected regions.
-        • “Draw Opaque” controls whether white is treated as transparent when pasting.
-        """
-
-        let attr = NSMutableAttributedString(string: intro)
-        let p = NSMutableParagraphStyle()
-        p.lineSpacing = 2
-        attr.addAttributes([
-            .font: NSFont.systemFont(ofSize: 13),
-            .foregroundColor: NSColor.labelColor,
-            .paragraphStyle: p
-        ], range: NSRange(location: 0, length: attr.length))
-        textView.textStorage?.setAttributedString(attr)
-
-        let scroll = NSScrollView(frame: .zero)
+        // ---- Host view + scroll view ----
+        let contentView = NSView()
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.hasVerticalScroller = true
-        scroll.documentView = textView
+        scroll.hasHorizontalScroller = false
         scroll.drawsBackground = true
         scroll.backgroundColor = .textBackgroundColor
-
-        let contentView = NSView()
-        contentView.translatesAutoresizingMaskIntoConstraints = false
-        scroll.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(scroll)
 
         NSLayoutConstraint.activate([
@@ -1353,22 +1343,446 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             scroll.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
         ])
 
-        let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
-            backing: .buffered, defer: false
-        )
-        win.title = "Help Topics"
-        win.contentView = contentView
-        win.center()
-        win.delegate = self
+        // ---- Text view inside the scroll view ----
+        let textView = NSTextView(frame: .zero)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.backgroundColor = .textBackgroundColor
+        textView.textContainerInset = NSSize(width: 12, height: 12)
 
-        // Retain controller so window isn't deallocated while open
+        // Important: give the container a real width BEFORE layout,
+        // otherwise it can stay 0 and nothing draws.
+        let initialContentWidth = win.contentLayoutRect.width
+        let containerWidth = max(360, initialContentWidth) // safety minimum
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(
+            width: containerWidth,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                  height: CGFloat.greatestFiniteMagnitude)
+
+        // ---- Styles ----
+        func pStyle(_ spacing: CGFloat = 2, _ after: CGFloat = 8) -> NSParagraphStyle {
+            let p = NSMutableParagraphStyle()
+            p.lineSpacing = spacing
+            p.paragraphSpacing = after
+            return p
+        }
+        let h1: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 17, weight: .semibold),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: pStyle(2, 10)
+        ]
+        let h2: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 15, weight: .semibold),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: pStyle(1, 6)
+        ]
+        let bodyAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: pStyle()
+        ]
+        let monoAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+            .foregroundColor: NSColor.secondaryLabelColor
+        ]
+
+        func append(_ s: String, _ attrs: [NSAttributedString.Key: Any]) -> NSAttributedString {
+            return NSAttributedString(string: s + "\n", attributes: attrs)
+        }
+        func bullet(_ s: String) -> NSAttributedString {
+            return NSAttributedString(string: "• " + s + "\n", attributes: bodyAttrs)
+        }
+
+        // ---- Build content ----
+        let body = NSMutableAttributedString()
+
+        // Intro
+        body.append(append("Welcome to Paint95 Help", h1))
+        body.append(NSAttributedString(string:
+            """
+            Select a tool from the Tool Box, choose colours from the Colour Palette, and use menus to transform your image.
+            Hold ⇧ to constrain lines to 45° and draw perfect squares/circles. Use the Select tool to move/resize pasted or selected regions.
+            “Draw Opaque” controls whether white is treated as transparent when pasting.
+
+            """, attributes: bodyAttrs))
+
+        // Tools (full list)
+        body.append(append("Tools", h1))
+        [
+            "Pencil — 1-pixel hard stroke.",
+            "Brush — Variable-size soft stroke.",
+            "Eraser — Paint with white to remove pixels.",
+            "Fill (Bucket) — Flood-fill contiguous colour.",
+            "Line — Straight line; ⇧ snaps to 45°.",
+            "Rectangle — Outline; ⇧ for square.",
+            "Rounded Rectangle — Rounded corners; ⇧ for square.",
+            "Ellipse — Outline; ⇧ for circle.",
+            "Curve — Start/end then two control clicks.",
+            "Text — Type in a box; commits on exit.",
+            "Select — Rectangular selection; move/resize; cut/copy/paste.",
+            "Spray — Airbrush effect.",
+            "Eyedropper — Pick colour from canvas.",
+            "Zoom — Toggle a zoomed region."
+        ].forEach { body.append(bullet($0)) }
+        body.append(NSAttributedString(string: "\n", attributes: bodyAttrs))
+
+        // Menus (dynamic; always matches the actual menu bar)
+        body.append(append("Menus", h1))
+
+        // Helper: human-friendly shortcut string (e.g. ⌘⇧S, Delete, ⌘,)
+        func shortcutString(for item: NSMenuItem) -> String? {
+            let key = item.keyEquivalent
+            if key.isEmpty { return nil }
+
+            func mods(_ m: NSEvent.ModifierFlags) -> String {
+                var s = ""
+                if m.contains(.command) { s += "⌘" }
+                if m.contains(.shift)   { s += "⇧" }
+                if m.contains(.option)  { s += "⌥" }
+                if m.contains(.control) { s += "⌃" }
+                return s
+            }
+
+            let mod = mods(item.keyEquivalentModifierMask)
+
+            // Special keys we use in the app
+            switch key {
+            case "\u{8}":   return mod + "Delete"        // Backspace as Delete in menus
+            case "\r":      return mod + "Return"
+            case "\n":      return mod + "Enter"
+            default:        break
+            }
+
+            // Uppercase letter if single a–z; otherwise show raw symbol (e.g. ",", "?", "0"…"9")
+            if key.count == 1, let c = key.uppercased().first {
+                return mod + String(c)
+            }
+            return mod + key
+        }
+
+        // Helper: description for a menu item (optional, lightweight)
+        func describe(_ title: String) -> String? {
+            // Common items (you can expand this map over time)
+            switch title {
+            case _ where title.hasPrefix("About "): return "Show app version and credits."
+            case _ where title.hasPrefix("Hide "):  return "Hide this app."
+            case "Hide Others": return "Hide all other apps."
+            case "Show All": return "Reveal all hidden apps."
+            case _ where title.hasPrefix("Quit "): return "Quit the application."
+
+            case "New": return "Create a new blank canvas."
+            case "Open…": return "Open an image file."
+            case "Save": return "Save the current document."
+            case "Save As…": return "Save to a new file."
+            case "Send…": return "Share the image with another app."
+            case "Set As Wallpaper (Tiled)": return "Set the image as a tiled desktop background."
+            case "Set As Wallpaper (Centered)": return "Set the image as a centered desktop background."
+            case "Exit": return "Close the window."
+
+            case "Undo": return "Undo the last action."
+            case "Repeat": return "Redo the last undone action."
+            case "Cut": return "Cut the current selection."
+            case "Copy": return "Copy the current selection."
+            case "Paste": return "Paste from the clipboard."
+            case "Clear Selection": return "Delete pixels in the current selection."
+            case "Select All": return "Select the entire canvas."
+            case "Set Canvas Size…": return "Change canvas width and height."
+            case "Copy To…": return "Export the selection to a new file."
+            case "Paste From…": return "Import from a file into the canvas."
+
+            case "Tool Box": return "Show or hide the tool palette."
+            case "Colour Box": return "Show or hide the colour palette."
+            case "Status Bar": return "Show or hide the status strip."
+            case "Zoom (activate tool)": return "Switch to the Zoom tool."
+            case "Normal Size": return "Display at normal scale."
+            case "Large Size": return "Display at larger scale."
+            case "Custom…": return "Choose a custom zoom level."
+            case "View Bitmap…": return "Inspect the raw bitmap."
+
+            case "Flip/Rotate…": return "Flip or rotate the selection/canvas."
+            case "Stretch/Skew…": return "Scale or shear the selection/canvas."
+            case "Invert Colors": return "Invert pixel colours."
+            case "Attributes…": return "View image properties."
+            case "Clear Image": return "Erase the entire canvas."
+            case "Draw Opaque": return "Treat white as solid when pasting."
+
+            case "Colours…": return "Edit active colours and palettes."
+            case "Get Colours…": return "Pick colours from system sources."
+            case "Save Colours…": return "Save current palette to file."
+            case "Restore Default Colours": return "Reset palette to defaults."
+
+            case "Help Topics": return "Open this help window."
+            case "About Paint": return "About dialog (alternate location)."
+            default: return nil
+            }
+        }
+
+        // Iterate menus in the exact order they appear in the menubar
+        if let mainMenu = NSApp.mainMenu {
+            for top in mainMenu.items {
+                guard let submenu = top.submenu,
+                      !submenu.items.isEmpty else { continue }
+
+                body.append(append(submenu.title, h2))
+
+                for item in submenu.items {
+                    if item.isSeparatorItem { continue }
+                    let title = item.title.isEmpty ? "—" : item.title
+                    let shortcut = shortcutString(for: item).map { " (\($0))" } ?? ""
+
+                    if let desc = describe(title) {
+                        body.append(bullet("\(title)\(shortcut) — \(desc)"))
+                    } else {
+                        body.append(bullet("\(title)\(shortcut)"))
+                    }
+                }
+                body.append(NSAttributedString(string: "\n", attributes: bodyAttrs))
+            }
+        } else {
+            // Fallback if no main menu (very unlikely after constructMenuBar())
+            body.append(bullet("No menu loaded."))
+        }
+
+        // Put text into the text view
+        textView.textStorage?.setAttributedString(body)
+
+        // Ensure layout now and give the text view a real height so it is visible.
+        if let lm = textView.layoutManager, let tc = textView.textContainer {
+            lm.ensureLayout(for: tc)
+            let used = lm.usedRect(for: tc)
+            textView.frame = NSRect(x: 0, y: 0, width: containerWidth, height: used.height + 24)
+        } else {
+            textView.frame = NSRect(x: 0, y: 0, width: containerWidth, height: 1000)
+        }
+
+        // Hook up the scroll view
+        scroll.documentView = textView
+
+        // Show window
+        win.contentView = contentView
         let wc = NSWindowController(window: win)
         self.helpTopicsWC = wc
         wc.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+
+        // After the window lays out, update the container width once more so wrapping is correct on first show.
+        DispatchQueue.main.async {
+            let w = win.contentLayoutRect.width
+            let width = max(360, w)
+            textView.textContainer?.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+            textView.frame.size.width = width
+            if let lm = textView.layoutManager, let tc = textView.textContainer {
+                lm.ensureLayout(for: tc)
+                let used = lm.usedRect(for: tc)
+                textView.frame.size.height = used.height + 24
+            }
+        }
     }
+    
+    // MARK: - Help content builder
+
+    private func buildHelpAttributedString() -> NSAttributedString {
+        let out = NSMutableAttributedString()
+
+        // Styles
+        let body = NSFont.systemFont(ofSize: 13)
+        let h1   = NSFont.systemFont(ofSize: 20, weight: .semibold)
+        let h2   = NSFont.systemFont(ofSize: 16, weight: .semibold)
+        let mono = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+
+        let basePara: NSParagraphStyle = {
+            let p = NSMutableParagraphStyle()
+            p.lineSpacing = 2
+            p.paragraphSpacing = 6
+            return p
+        }()
+
+        func addHeader(_ text: String, font: NSFont, topSpace: CGFloat = 12) {
+            let p = (basePara.mutableCopy() as! NSMutableParagraphStyle)
+            p.paragraphSpacingBefore = topSpace
+            out.append(NSAttributedString(string: text + "\n", attributes: [
+                .font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: p
+            ]))
+        }
+
+        func addBody(_ text: String) {
+            out.append(NSAttributedString(string: text + "\n", attributes: [
+                .font: body, .foregroundColor: NSColor.labelColor, .paragraphStyle: basePara
+            ]))
+        }
+
+        func addBullet(_ text: String) {
+            let p = (basePara.mutableCopy() as! NSMutableParagraphStyle)
+            p.headIndent = 18
+            p.firstLineHeadIndent = 0
+            p.tabStops = [NSTextTab(textAlignment: .left, location: 18)]
+            out.append(NSAttributedString(string: "•\t" + text + "\n", attributes: [
+                .font: body, .foregroundColor: NSColor.labelColor, .paragraphStyle: p
+            ]))
+        }
+
+        func kbd(_ s: String) -> NSAttributedString {
+            return NSAttributedString(string: s, attributes: [
+                .font: mono, .foregroundColor: NSColor.secondaryLabelColor
+            ])
+        }
+
+        // --- Intro ---
+        addHeader("Welcome to Paint95 Help", font: h1, topSpace: 0)
+        addBody("""
+    Select a tool from the Tool Box on the left, choose colours from the Colour Palette, and use menus for image operations and view options.
+    """)
+        addHeader("Tips", font: h2)
+        [
+            "Hold ⇧ to constrain lines to 45° steps and to draw perfect squares/circles.",
+            "Use the Select tool to move/resize pasted or selected regions.",
+            "“Draw Opaque” controls whether white is treated as transparent when pasting.",
+            "Arrow keys nudge selections or pasted overlays; Return commits; Delete cancels paste or clears selection."
+        ].forEach(addBullet)
+
+        // --- Tools (complete list) ---
+        addHeader("Tools", font: h1)
+        for (name, desc) in allToolsHelp() {
+            addBullet("\(name) — \(desc)")
+        }
+
+        // --- Menus (walk the real menu bar and explain each item) ---
+        addHeader("Menus", font: h1)
+
+        if let main = NSApp.mainMenu {
+            for menuItem in main.items {
+                guard let submenu = menuItem.submenu, !submenu.items.isEmpty else { continue }
+                addHeader(menuItem.title, font: h2)
+
+                for item in submenu.items where !(item.isSeparatorItem) {
+                    let title = item.title.replacingOccurrences(of: "...", with: "…") // normalize
+                    let shortcut = shortcutString(for: item)
+
+                    // Explanation for this item
+                    let expl = menuItemExplanation(forTitle: title)
+
+                    // Compose line
+                    var line = title
+                    if !shortcut.isEmpty { line += " (\(shortcut))" }
+                    line += " — \(expl)"
+
+                    addBullet(line)
+                }
+            }
+        } else {
+            // Fallback if menu isn't initialized yet
+            addBody("Menus will appear here once the application menu bar is available.")
+        }
+
+        // --- Keyboard Shortcuts quick legend ---
+        addHeader("Keyboard Shortcuts", font: h1)
+        out.append(kbd("""
+    ⌘Z Undo    ⌘Y Redo    ⌘X Cut    ⌘C Copy    ⌘V Paste
+    ⌘A Select All    Delete Clear selection/cancel paste
+    Arrows Nudge selection/paste    Return Commit paste/selection
+    """))
+
+        return out
+    }
+
+    // All tools + one-line explanations (edit these to taste)
+    private func allToolsHelp() -> [(String, String)] {
+        return [
+            ("Pencil", "Draws 1-pixel hard strokes without smoothing."),
+            ("Brush", "Draws variable-width soft strokes (set via Tool Size)."),
+            ("Eraser", "Erases to background and removes overlapping vector strokes."),
+            ("Fill", "Flood-fills a contiguous region with the current colour."),
+            ("Curve", "Three-stage curve: define line, then two control points."),
+            ("Line", "Draw a straight line; hold ⇧ to snap to 45° increments."),
+            ("Rectangle", "Draw a rectangle; hold ⇧ for a square."),
+            ("Rounded Rectangle", "Rectangle with rounded corners."),
+            ("Ellipse", "Draw an ellipse; hold ⇧ for a circle."),
+            ("Zoom", "Toggle a zoom box preview and magnified view."),
+            ("Select", "Marquee selection; drag handles to resize; move with mouse/arrow keys."),
+            ("Spray", "Spray can effect within a radius at the cursor."),
+            ("Eyedropper", "Pick a colour from the canvas."),
+            ("Text", "Create a text box; commit to raster on finish.")
+        ]
+    }
+
+    // Human-written explanations for every menu item title you ship.
+    // Keys should match the actual visible titles in your menus.
+    private func menuItemExplanation(forTitle title: String) -> String {
+        let map: [String: String] = [
+            // File
+            "New": "Create a blank canvas.",
+            "Open…": "Open an image file.",
+            "Save": "Save the current document to its file.",
+            "Save As…": "Save to a new file/format.",
+            "Export Palette…": "Export the current palette (.gpl, JASC-PAL, or .clr).",
+            "Import Palette…": "Import a palette file and replace the current palette.",
+            "Close": "Close the current window.",
+            // Edit
+            "Undo": "Revert the last change (up to 5 steps).",
+            "Redo": "Reapply the last undone change.",
+            "Cut": "Remove selection from canvas and copy to clipboard.",
+            "Copy": "Copy selection to clipboard (without removing it).",
+            "Paste": "Paste from clipboard as a movable overlay; Return commits.",
+            "Delete": "Clear selection or cancel paste overlay.",
+            "Select All": "Select the entire canvas.",
+            "Clear Selection": "Deselect and clear selection rectangle.",
+            // Image
+            "Flip/Rotate…": "Flip horizontally/vertically or rotate the selection/canvas.",
+            "Stretch/Skew…": "Scale and skew the selection/canvas.",
+            "Canvas Size…": "Change the canvas dimensions.",
+            "Clear Canvas": "Erase the entire canvas to white.",
+            // View
+            "Zoom In": "Increase magnification.",
+            "Zoom Out": "Decrease magnification.",
+            "Show Grid": "Toggle grid overlay (if implemented).",
+            "Draw Opaque": "When off, white acts as transparent during paste.",
+            // Tools (menu items)
+            "Tool Size": "Adjust the size for brush/eraser and some shapes.",
+            "Primary Colour": "Set the primary drawing colour.",
+            "Secondary Colour": "Set the secondary colour (background/fill).",
+            // Help
+            "Paint95 Help": "Open this Help Topics window.",
+            "Keyboard Shortcuts": "List of common shortcuts.",
+            "About Paint": "Show app information."
+        ]
+
+        // Return mapped explanation or a reasonable default
+        return map[title] ?? "No description provided."
+    }
+
+    // Nicely formatted shortcut like "⌘Z", "⇧⌘S", or "" if none
+    private func shortcutString(for item: NSMenuItem) -> String {
+        guard !item.keyEquivalent.isEmpty else { return "" }
+        let m = item.keyEquivalentModifierMask
+        var parts = [String]()
+        if m.contains(.control)   { parts.append("⌃") }
+        if m.contains(.option)    { parts.append("⌥") }
+        if m.contains(.shift)     { parts.append("⇧") }
+        if m.contains(.command)   { parts.append("⌘") }
+
+        // Special arrows and delete/return if you use them as key equivalents
+        let key = item.keyEquivalent.lowercased()
+        let pretty: String = {
+            switch key {
+            case String(UnicodeScalar(NSUpArrowFunctionKey)!): return "↑"
+            case String(UnicodeScalar(NSDownArrowFunctionKey)!): return "↓"
+            case String(UnicodeScalar(NSLeftArrowFunctionKey)!): return "←"
+            case String(UnicodeScalar(NSRightArrowFunctionKey)!): return "→"
+            case "\r": return "↩" // Return
+            case String(UnicodeScalar(NSDeleteFunctionKey)!): return "⌫"
+            default: return key.uppercased()
+            }
+        }()
+        parts.append(pretty)
+        return parts.joined()
+    }
+
 
     // Release retained Help Topics WC when closed
     func windowWillClose(_ notification: Notification) {

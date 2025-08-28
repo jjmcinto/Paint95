@@ -152,6 +152,9 @@ class CanvasView: NSView {
     var selectionDragStartPoint: NSPoint?
     var selectionImageStartOrigin: NSPoint?
     
+    // NEW: one-time clear tracking for current floating selection
+    private var clearedOriginalAreaForCurrentSelection = false
+
     //canvas re-size
     enum ResizeHandle: Int {
         case bottomLeft = 0, bottomCenter, bottomRight
@@ -615,6 +618,9 @@ class CanvasView: NSView {
                     selectionImageStartOrigin = selectedImageOrigin
                     if !isPastingImage { // do NOT clear during uncommitted paste move
                         clearCanvasRegion(rect: rect)
+                        // Mark as cleared-once for this floating selection
+                        clearedOriginalAreaForCurrentSelection = true
+                        hasMovedSelection = true
                     }
                 }
             } else if !isPastingImage {
@@ -845,6 +851,7 @@ class CanvasView: NSView {
         case .line, .rect, .roundRect, .ellipse:
             endPoint = point
             // === Shift constraints for shapes ===
+            let shiftPressed = event.modifierFlags.contains(.shift)
             if shiftPressed {
                 let dx = endPoint.x - startPoint.x
                 let dy = endPoint.y - startPoint.y
@@ -948,6 +955,8 @@ class CanvasView: NSView {
             image.unlockFocus()
             selectedImage = image
             selectedImageOrigin = rect.origin
+            // Reset one-time clear flag for this new floating selection
+            clearedOriginalAreaForCurrentSelection = false
             window?.invalidateCursorRects(for: self)
             needsDisplay = true
 
@@ -1098,56 +1107,74 @@ class CanvasView: NSView {
     
     override func keyDown(with event: NSEvent) {
         guard event.type == .keyDown else { return }
+
+        // Handle Command-shortcuts first
         if event.modifierFlags.contains(.command) {
             if let chars = event.charactersIgnoringModifiers?.lowercased() {
                 switch chars {
-                //case "s":
-                    //saveCanvasToDefaultLocation()
+                // add command-key cases here if desired
                 default:
                     break
                 }
             }
         }
+        // Commit paste on Return while actively pasting
         else if isPastingActive, let characters = event.charactersIgnoringModifiers {
             if characters == "\r" || characters == "\n" {
-                // Enter or Return pressed
                 commitPastedImage()
-            }
-        } else {
-            let key = event.keyCode
-
-            // Move selected image with arrow keys
-            if let image = selectedImage, let io = selectedImageOrigin {
-                if isCutSelection {
-                    // Clear original selection area from canvas
-                    let clearRect = NSRect(origin: io, size: image.size)
-                    canvasImage?.lockFocus()
-                    NSColor.white.setFill()
-                    clearRect.fill()
-                    canvasImage?.unlockFocus()
-                }
-
-                // Shift the selection origin
-                var origin = io
-                switch key {
-                case 123: origin.x -= 1 // ←
-                case 124: origin.x += 1 // →
-                case 125: origin.y -= 1 // ↓
-                case 126: origin.y += 1 // ↑
-                case 36:  commitSelection(); return
-                case 51:  deleteSelectionOrPastedImage(); return
-                default:
-                    super.keyDown(with: event)
-                    return
-                }
-
-                selectedImageOrigin = origin
-                needsDisplay = true
                 return
             }
-
-            super.keyDown(with: event)
         }
+
+        let key = event.keyCode
+
+        // ---- Arrow-key movement (selection or pasted overlay) ----
+        let isArrow = (key == 123 || key == 124 || key == 125 || key == 126)
+        if isArrow {
+            // NEW: if we’re actively pasting, nudge the overlay without clearing underneath.
+            if isPastingActive, let img = selectedImage, let origin = selectedImageOrigin {
+                var newOrigin = origin
+                switch key {
+                case 123: newOrigin.x -= 1    // ←
+                case 124: newOrigin.x += 1    // →
+                case 125: newOrigin.y -= 1    // ↓
+                case 126: newOrigin.y += 1    // ↑
+                default: break
+                }
+                // Keep both the selection and paste overlay in sync
+                selectedImageOrigin = newOrigin
+                selectionRect = NSRect(origin: newOrigin, size: img.size)
+                pastedImageOrigin = newOrigin
+                needsDisplay = true
+                emitStatusUpdate(cursor: mousePosition)
+                return
+            }
+            
+            var dx: CGFloat = 0, dy: CGFloat = 0
+            switch key {
+            case 123: dx = -1      // ←
+            case 124: dx =  1      // →
+            case 125: dy = -1      // ↓
+            case 126: dy =  1      // ↑
+            default: break
+            }
+            moveSelectionBy(dx: dx, dy: dy) // handles both floating selection and pasted overlay
+            return
+        }
+
+        // Return (Enter) commits the floating/pasted image
+        if key == 36 { // Return
+            commitSelection()
+            return
+        }
+
+        // Delete cancels paste or clears selection area
+        if key == 51 || key == 117 { // Delete / Forward Delete
+            deleteSelectionOrPastedImage()
+            return
+        }
+
+        super.keyDown(with: event)
     }
     
     func cutSelection() {
@@ -1174,7 +1201,59 @@ class CanvasView: NSView {
         // Redraw now — without selected preview
         needsDisplay = true
     }
+    
+    // Promote the current rectangular selection to a floating bitmap and
+    // CUT the pixels from the canvas once (no-op if already floating).
+    private func cutSelectionToFloatingIfNeeded() {
+        guard selectedImage == nil,                         // not floating yet
+              let rect = selectionRect,                    // have a selection
+              let base = canvasImage,                      // have pixels to cut
+              rect.width > 0, rect.height > 0
+        else { return }
 
+        // 1) Copy the selected pixels into a new image (the “floating” selection)
+        let img = NSImage(size: rect.size)
+        img.lockFocus()
+        base.draw(at: .zero, from: rect, operation: .copy, fraction: 1.0)
+        img.unlockFocus()
+        selectedImage = img
+
+        // 2) CUT (clear) the original region on the canvas
+        base.lockFocus()
+        NSColor.white.setFill() // or a background color if you support one
+        rect.fill()
+        base.unlockFocus()
+
+        // Mark one-time clear complete
+        clearedOriginalAreaForCurrentSelection = true
+        hasMovedSelection = true
+
+        // Keep selectionRect as the floating rect (same origin to start)
+        // (If you track a separate floating origin, update that instead.)
+    }
+
+    /// Clear the original pixels under the *current* floating selection exactly once.
+    /// No-ops if (a) already cleared, (b) no floating selection, or (c) we're pasting.
+    private func ensureOriginalAreaClearedIfNeeded() {
+        guard !clearedOriginalAreaForCurrentSelection,
+              !isPastingActive,
+              let img = selectedImage,
+              let origin = selectedImageOrigin
+        else { return }
+
+        saveUndoState()
+        let clearRect = NSRect(origin: origin, size: img.size)
+
+        // Clear pixels on the canvas
+        clearCanvasRegion(rect: clearRect, lockFocus: true)
+
+        // Remove vector strokes that overlapped that region (clearCanvasRegion already does this).
+        drawnPaths.removeAll { $0.path.bounds.intersects(clearRect) }
+
+        clearedOriginalAreaForCurrentSelection = true
+        hasMovedSelection = true
+    }
+    
     func copySelection() {
         guard let image = selectedImage else { return }
         NSPasteboard.general.clearContents()
@@ -1194,6 +1273,12 @@ class CanvasView: NSView {
             isPastingImage = false
             pastedImage = nil
             pastedImageOrigin = nil
+        }
+        
+        // If a floating selection is active, commit it to the canvas
+        // before pasting a copy from the pasteboard.
+        if selectedImage != nil, selectedImageOrigin != nil {
+            commitSelection()
         }
 
         guard
@@ -1229,6 +1314,9 @@ class CanvasView: NSView {
         selectedImageOrigin = origin
         selectionRect = NSRect(origin: origin, size: img.size)
 
+        // Overlay should never pre-clear underneath; reset one-time flag
+        clearedOriginalAreaForCurrentSelection = false
+
         // Scroll to show pasted content
         if let clipView = superview as? NSClipView {
             clipView.scrollToVisible(NSRect(origin: origin, size: img.size))
@@ -1260,6 +1348,8 @@ class CanvasView: NSView {
             selectedImage = nil
             selectedImageOrigin = nil
             selectionRect = nil
+            clearedOriginalAreaForCurrentSelection = false
+            hasMovedSelection = false
             needsDisplay = true
             return
         }
@@ -1283,6 +1373,8 @@ class CanvasView: NSView {
         selectedImage = nil
         selectedImageOrigin = nil
         selectionRect = nil
+        clearedOriginalAreaForCurrentSelection = false
+        hasMovedSelection = false
         needsDisplay = true
     }
 
@@ -1300,6 +1392,8 @@ class CanvasView: NSView {
         isPastingImage = false
         isPastingActive = false
         isDraggingPastedImage = false
+        clearedOriginalAreaForCurrentSelection = false
+        hasMovedSelection = false
         needsDisplay = true
     }
     
@@ -1699,6 +1793,8 @@ class CanvasView: NSView {
             selectedImage = nil
             selectedImageOrigin = nil
             selectionRect = nil
+            clearedOriginalAreaForCurrentSelection = false
+            hasMovedSelection = false
             needsDisplay = true
             return
         }
@@ -1717,6 +1813,8 @@ class CanvasView: NSView {
             selectionRect = nil
             selectedImage = nil
             selectedImageOrigin = nil
+            clearedOriginalAreaForCurrentSelection = false
+            hasMovedSelection = false
             needsDisplay = true
         }
     }
@@ -1961,6 +2059,7 @@ class CanvasView: NSView {
 
         selectedImage = image
         selectedImageOrigin = rect.origin
+        clearedOriginalAreaForCurrentSelection = false
     }
     
     func pointsAreEqual(_ p1: NSPoint, _ p2: NSPoint) -> Bool {
@@ -1968,38 +2067,56 @@ class CanvasView: NSView {
     }
     
     @objc public func moveSelectionBy(dx: CGFloat, dy: CGFloat) {
-        if selectedImage != nil, let image = selectedImage {
-            if !hasMovedSelection {
-                // Clear original area on first move
-                canvasImage?.lockFocus()
-                NSColor.white.setFill()
-                if let io = selectedImageOrigin {
-                    let selectionArea = NSRect(origin: io, size: image.size)
-                    NSBezierPath(rect: selectionArea).fill()
-                    canvasImage?.unlockFocus()
-                    hasMovedSelection = true
-                    drawnPaths.removeAll { (path, _) in
-                        return path.bounds.intersects(selectionArea)
-                    }
+        guard dx != 0 || dy != 0 else {
+            emitStatusUpdate(cursor: mousePosition)
+            return
+        }
+        
+        // 1) If we’re nudging a pasted image, move the overlay AND the visible selection.
+        if isPastingActive {
+            // Prefer the selection origin (that’s what draw() uses), but fall back to the paste origin.
+            let base = selectedImageOrigin ?? pastedImageOrigin
+            if let origin = base {
+                let newOrigin = NSPoint(x: origin.x + dx, y: origin.y + dy)
+                selectedImageOrigin = newOrigin
+                if let img = selectedImage {
+                    selectionRect = NSRect(origin: newOrigin, size: img.size)
                 }
+                pastedImageOrigin = newOrigin
+                needsDisplay = true
+                emitStatusUpdate(cursor: mousePosition)
+                return
             }
+        }
+
+        // 2) If we only have a marquee (no floating bitmap yet), CUT once and promote.
+        if selectedImage == nil,
+           let rect = selectionRect,
+           rect.width > 0, rect.height > 0 {
+            cutSelectionToFloatingIfNeeded() // sets clearedOriginalAreaForCurrentSelection & hasMovedSelection
+        } else {
+            // 3) If already floating, clear original area exactly once if not already done.
+            ensureOriginalAreaClearedIfNeeded()
+        }
+
+        // 4) Nudge the floating selection (preferred) or, as fallback, the marquee.
+        if let origin = selectedImageOrigin {
+            let newOrigin = NSPoint(x: origin.x + dx, y: origin.y + dy)
+            selectedImageOrigin = newOrigin
+            if let img = selectedImage {
+                selectionRect = NSRect(origin: newOrigin, size: img.size)
+            }
+            needsDisplay = true
+        } else if let r = selectionRect {
+            // Should rarely happen; kept for safety.
+            selectionRect = r.offsetBy(dx: dx, dy: dy)
             needsDisplay = true
         }
 
-        if isPastingActive, let origin = pastedImageOrigin {
-            pastedImageOrigin = NSPoint(x: origin.x + dx, y: origin.y + dy)
-            needsDisplay = true
-        } else if let rect = selectionRect {
-            selectionRect = rect.offsetBy(dx: dx, dy: dy)
-            if let io = selectedImageOrigin {
-                selectedImageOrigin = NSPoint(x: io.x + dx, y: io.y + dy)
-            }
-            needsDisplay = true
-        }
-
-        // NEW: notify delegate about status update
-        emitStatusUpdate(cursor: mousePosition)  // assuming you track mousePosition already
+        emitStatusUpdate(cursor: mousePosition)
     }
+
+
     
     // Make the scroll view ask for our size when needed
     override var intrinsicContentSize: NSSize {
@@ -2209,3 +2326,4 @@ extension NSImage {
         return out
     }
 }
+
