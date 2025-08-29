@@ -254,6 +254,7 @@ final class StretchSkewSheetController: NSWindowController, NSTextFieldDelegate 
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
+    private weak var activeSaveAsPanel: NSSavePanel?
     var window: NSWindow?
     private var currentDocumentURL: URL?
     private var isDrawOpaque: Bool = true
@@ -262,6 +263,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // Retain the Help Topics window so it doesn't deallocate while open
     private var helpTopicsWC: NSWindowController?
+
+    // --- Save As: format popup state ---
+    private var saveAsFormatPopup: NSPopUpButton?
+    private var lastSaveFormat: SaveFormat = .png
 
     // MARK: - App lifecycle
 
@@ -929,54 +934,70 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         fileSaveAs(sender)
     }
 
+    // --- NEW: Save As with format drop-down (BMP, GIF, JPEG, PNG, TIFF) ---
     @MainActor
     @IBAction func fileSaveAs(_ sender: Any?) {
-        // Folder chooser (avoids NSSavePanel crash you hit earlier)
-        let panel = NSOpenPanel()
-        panel.title = "Choose a Folder"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
-        guard panel.runModal() == .OK, let dir = panel.url else { return }
+        let panel = NSSavePanel()
+        activeSaveAsPanel = panel                     // <-- keep reference
+        defer { activeSaveAsPanel = nil }             // <-- clear on exit
 
-        let suggested: String = {
-            if let current = currentDocumentURL?.deletingPathExtension().lastPathComponent, !current.isEmpty {
-                return current + ".png"
-            } else {
-                return "Untitled.png"
-            }
-        }()
+        panel.title = "Save As"
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
 
-        let alert = NSAlert()
-        alert.messageText = "Save As"
-        alert.informativeText = "Enter a file name:"
-        let nameField = NSTextField(string: suggested)
-        nameField.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
-        alert.accessoryView = nameField
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let base = currentDocumentURL?.deletingPathExtension().lastPathComponent
+        let suggestedBase = (base?.isEmpty == false ? base! : "Untitled")
 
-        var filename = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if filename.isEmpty { filename = suggested }
-        if (filename as NSString).pathExtension.isEmpty { filename += ".png" }
-        let url = dir.appendingPathComponent(filename)
+        let currentExt = currentDocumentURL?.pathExtension.lowercased()
+        let defaultExt = (currentExt?.isEmpty == false ? currentExt! : "png")
+        panel.nameFieldStringValue = suggestedBase + "." + defaultExt
 
-        if FileManager.default.fileExists(atPath: url.path) {
-            let ow = NSAlert()
-            ow.messageText = "Replace existing file?"
-            ow.informativeText = "A file named “\(filename)” already exists in this location."
-            ow.alertStyle = .warning
-            ow.addButton(withTitle: "Replace")
-            ow.addButton(withTitle: "Cancel")
-            guard ow.runModal() == .alertFirstButtonReturn else { return }
+        let formats: [(title: String, ext: String)] = [
+            ("PNG (.png)",   "png"),
+            ("JPEG (.jpg)",  "jpg"),
+            ("Bitmap (.bmp)","bmp"),
+            ("TIFF (.tiff)", "tiff"),
+            ("GIF (.gif)",   "gif")
+        ]
+        panel.allowedFileTypes = formats.map { $0.ext }
+
+        // Accessory view
+        let label = NSTextField(labelWithString: "File format:")
+        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+        popup.addItems(withTitles: formats.map { $0.title })
+        for (i, f) in formats.enumerated() { popup.item(at: i)?.representedObject = f.ext }
+        popup.target = self
+        popup.action = #selector(saveAsFormatChanged(_:))
+
+        // Preselect based on current extension and sync the name field if needed
+        if let idx = formats.firstIndex(where: { $0.ext == defaultExt }) {
+            popup.selectItem(at: idx)
+            // Make sure the text field extension matches the selected item exactly
+            replaceNameFieldExtension(in: panel, with: formats[idx].ext)
+        } else {
+            popup.selectItem(at: 0)
+            replaceNameFieldExtension(in: panel, with: formats[0].ext)
+        }
+
+        let stack = NSStackView(views: [label, popup])
+        stack.orientation = .horizontal
+        stack.alignment = .firstBaseline
+        stack.spacing = 8
+        panel.accessoryView = stack
+
+        guard panel.runModal() == .OK, var url = panel.url else { return }
+
+        // Enforce the selected extension on save, even if user typed something else
+        let chosenExt = (popup.selectedItem?.representedObject as? String) ?? defaultExt
+        if url.pathExtension.lowercased() != chosenExt {
+            url.deletePathExtension()
+            url.appendPathExtension(chosenExt)
         }
 
         currentDocumentURL = url
         doSave(to: url)
     }
-
+    
     // NEW: Prompt before destructive actions (New / Open / Exit)
     @objc func fileNew(_ sender: Any?) {
         // If nothing to lose, just clear
@@ -1206,7 +1227,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return out
     }
 
-    // MARK: - Save helper
+    // MARK: - Save helper (used by plain Save)
 
     private func doSave(to url: URL) {
         guard let image = snapshotCanvas() ?? canvasView()?.canvasImage else { return }
@@ -1218,6 +1239,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "jpg", "jpeg": fileType = .jpeg
         case "bmp":  fileType = .bmp
         case "tiff": fileType = .tiff
+        case "gif":  fileType = .gif
         default:     fileType = .png
         }
 
@@ -1896,6 +1918,109 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 }
 
+// MARK: - SaveFormat for Save As popup
+private enum SaveFormat: CaseIterable, Equatable {
+    // Order roughly matches classic Paint era
+    case bmp, gif, jpeg, png, tiff
+
+    var displayName: String {
+        switch self {
+        case .bmp:  return "BMP"
+        case .gif:  return "GIF"
+        case .jpeg: return "JPEG"
+        case .png:  return "PNG"
+        case .tiff: return "TIFF"
+        }
+    }
+    var fileExtension: String {
+        switch self {
+        case .bmp:  return "bmp"
+        case .gif:  return "gif"
+        case .jpeg: return "jpg"
+        case .png:  return "png"
+        case .tiff: return "tiff"
+        }
+    }
+    var repType: NSBitmapImageRep.FileType {
+        switch self {
+        case .bmp:  return .bmp
+        case .gif:  return .gif
+        case .jpeg: return .jpeg
+        case .png:  return .png
+        case .tiff: return .tiff
+        }
+    }
+}
+
+private extension AppDelegate {
+    func enforceSelectedExtension(on panel: NSSavePanel, selected: SaveFormat) -> URL {
+        // Start from panel.url and append the selected extension
+        // if the name field doesn't already end with it (case-insensitive).
+        var url = panel.url!
+        let nameLower = panel.nameFieldStringValue.lowercased()
+        let dotExt = "." + selected.fileExtension.lowercased()
+        if !nameLower.hasSuffix(dotExt) {
+            url = url.appendingPathExtension(selected.fileExtension)
+        }
+        return url
+    }
+}
+
+// MARK: - NSSavePanel accessory helpers
+private extension AppDelegate {
+    func makeSaveAsAccessory(for panel: NSSavePanel, initial: SaveFormat) -> NSView {
+        let container = NSView(frame: .init(x: 0, y: 0, width: 360, height: 28))
+
+        let label = NSTextField(labelWithString: "File format:")
+        label.alignment = .right
+        label.frame = .init(x: 0, y: 4, width: 90, height: 20)
+
+        let popup = NSPopUpButton(frame: .init(x: 100, y: 1, width: 240, height: 26), pullsDown: false)
+        popup.target = self
+        popup.action = #selector(saveAsFormatChanged(_:))
+
+        // Populate
+        SaveFormat.allCases.enumerated().forEach { (i, fmt) in
+            popup.addItem(withTitle: "\(fmt.displayName) (.\(fmt.fileExtension))")
+            popup.item(at: i)?.tag = i
+        }
+        if let idx = SaveFormat.allCases.firstIndex(of: initial) {
+            popup.selectItem(at: idx)
+        }
+
+        self.saveAsFormatPopup = popup
+        container.addSubview(label)
+        container.addSubview(popup)
+        return container
+    }
+
+    @objc private func saveAsFormatChanged(_ sender: NSPopUpButton) {
+        guard let panel = activeSaveAsPanel else { return }
+        let ext = (sender.selectedItem?.representedObject as? String) ?? "png"
+        replaceNameFieldExtension(in: panel, with: ext)
+    }
+
+    private func replaceNameFieldExtension(in panel: NSSavePanel, with newExt: String) {
+        var name = panel.nameFieldStringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { name = "Untitled" }
+        let base = (name as NSString).deletingPathExtension
+        panel.nameFieldStringValue = base + "." + newExt
+    }
+
+    func selectedSaveAsFormat() -> SaveFormat? {
+        guard let popup = saveAsFormatPopup else { return nil }
+        let idx = popup.indexOfSelectedItem
+        let all = SaveFormat.allCases
+        guard idx >= 0 && idx < all.count else { return nil }
+        return all[idx]
+    }
+
+    private func updateNameFieldExtension(on panel: NSSavePanel, toExt ext: String) {
+        let base = (panel.nameFieldStringValue as NSString).deletingPathExtension
+        panel.nameFieldStringValue = base + "." + ext
+    }
+}
+
 extension NSImage {
     func invertedRGB() -> NSImage? {
         guard let rep = rgba8Bitmap(), let data = rep.bitmapData else { return nil }
@@ -1981,4 +2106,3 @@ private enum AppPaletteExporter {
         return (max(0,min(255,r)), max(0,min(255,g)), max(0,min(255,b)))
     }
 }
-

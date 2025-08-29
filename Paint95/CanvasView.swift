@@ -5,6 +5,36 @@ protocol CanvasViewDelegate: AnyObject {
     func canvasStatusDidChange(cursor: NSPoint, selectionSize: NSSize?)
 }
 
+// MARK: - Export snapshot (flattens any floating selection)
+extension CanvasView {
+    /// Returns a flattened image of the visible canvas, including any floating selection.
+    func snapshotImageForExport() -> NSImage? {
+        guard let base = canvasImage else { return nil }
+        let size = canvasRect.size
+        let out = NSImage(size: size)
+
+        out.lockFocus()
+        NSColor.white.setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
+
+        // Draw the base canvas
+        base.draw(in: NSRect(origin: .zero, size: size),
+                  from: NSRect(origin: .zero, size: base.size),
+                  operation: .copy,
+                  fraction: 1.0,
+                  respectFlipped: true,
+                  hints: [.interpolation: NSImageInterpolation.none])
+
+        // If there’s a floating selection, draw it in place
+        if let sel = selectedImage, let origin = selectedImageOrigin {
+            sel.draw(at: origin, from: .zero, operation: .sourceOver, fraction: 1.0)
+        }
+
+        out.unlockFocus()
+        return out
+    }
+}
+
 extension CanvasView: NSTextViewDelegate {
     func textDidEndEditing(_ notification: Notification) {
         guard let tv = textView else { return }
