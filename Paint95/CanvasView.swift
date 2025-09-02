@@ -74,12 +74,19 @@ extension CanvasView {
     
     /// Resize the canvas to `newSize`, preserving existing pixels anchored at the TOP-LEFT corner.
     /// Adds white space (right/bottom) when growing; crops from the bottom/right when shrinking.
+    /// Uses the app's undo stack (image+rect), so Undo restores pixels *and* size with no scaling.
     func setCanvasSizeAnchoredTopLeft(to newSize: NSSize) {
         initializeCanvasIfNeeded()
+        // Snapshot BEFORE change (image + rect)
+        saveUndoState()
 
         guard let image = canvasImage else {
-            // No content yet—just size the canvas
-            updateCanvasSize(to: newSize)
+            canvasRect.origin = .zero
+            canvasRect.size   = newSize
+            // Keep view in sync without re-drawing pixels
+            setFrameSize(newSize)
+            invalidateIntrinsicContentSize()
+            window?.invalidateCursorRects(for: self)
             needsDisplay = true
             return
         }
@@ -87,13 +94,11 @@ extension CanvasView {
         let oldSize = image.size
         let newImage = NSImage(size: newSize)
 
-        // Compute the area that survives (overlap)
+        // Overlap
         let drawWidth  = min(oldSize.width,  newSize.width)
         let drawHeight = min(oldSize.height, newSize.height)
 
-        // For TOP-LEFT anchoring:
-        // - If growing, destination Y is newH - oldH (so tops align).
-        // - If shrinking, we crop from bottom/right, so source Y starts at (oldH - drawH).
+        // TOP-LEFT anchoring (account for AppKit’s base coords)
         let sourceY = max(0, oldSize.height - drawHeight)
         let destY   = max(0, newSize.height - drawHeight)
 
@@ -101,10 +106,8 @@ extension CanvasView {
         let destRect   = NSRect(x: 0, y: destY,   width: drawWidth, height: drawHeight)
 
         newImage.lockFocus()
-        // Fill new/extra space with white
         NSColor.white.setFill()
         NSBezierPath(rect: NSRect(origin: .zero, size: newSize)).fill()
-
         image.draw(
             in: destRect,
             from: sourceRect,
@@ -114,12 +117,32 @@ extension CanvasView {
             hints: [.interpolation: NSImageInterpolation.none]
         )
         newImage.unlockFocus()
+        
+        // Commit new pixels/size and drop vector cache so old strokes can’t resurrect
+        commitRasterChange(newImage, resetVectors: true)
 
-        // Commit
-        canvasImage = newImage
-        canvasRect.origin = .zero
-        updateCanvasSize(to: newSize)
+        // Keep view/scroll sizing in sync WITHOUT calling updateCanvasSize(to:)
+        setFrameSize(newSize)
+        invalidateIntrinsicContentSize()
+        window?.invalidateCursorRects(for: self)
         needsDisplay = true
+    }
+    
+    /// Restores a previous canvas image and rect exactly, and registers the inverse for redo.
+    private func restoreCanvas(image: NSImage?, rect: NSRect) {
+        let prevImage = canvasImage?.copy() as? NSImage
+        let prevRect  = canvasRect
+
+        canvasImage = image?.copy() as? NSImage
+        canvasRect  = rect
+        updateCanvasSize(to: rect.size)
+        needsDisplay = true
+
+        // Redo support: swap back to what we had before restore
+        undoManager?.registerUndo(withTarget: self) { me in
+            me.restoreCanvas(image: prevImage, rect: prevRect)
+        }
+        undoManager?.setActionName("Canvas Size")
     }
 }
 
@@ -192,6 +215,7 @@ class CanvasView: NSView {
         case topLeft, topCenter, topRight
     }
     let handleSize: CGFloat = 5
+    private let handleHitSlop: CGFloat = 6   // extra clickable area around each canvas handle
     var activeResizeHandle: ResizeHandle? = nil
     var isResizingCanvas = false
     var dragStartPoint: NSPoint = .zero
@@ -250,8 +274,12 @@ class CanvasView: NSView {
     var currentSprayPoint: NSPoint = .zero
     
     // Undo/Redo
-    private var undoStack: [NSImage] = []
-    private var redoStack: [NSImage] = []
+    private struct CanvasSnapshot {
+        let image: NSImage?
+        let rect:  NSRect
+    }
+    private var undoStack: [CanvasSnapshot] = []
+    private var redoStack: [CanvasSnapshot] = []
     private let maxUndoSteps = 5
     private var cancelCurvePreview = false
     
@@ -598,8 +626,9 @@ class CanvasView: NSView {
         // === Canvas handle detection ===
         for (i, pos) in handlePositions.enumerated() {
             let handleRect = NSRect(x: pos.x, y: pos.y, width: handleSize, height: handleSize)
-            if handleRect.contains(point) {
-                saveUndoState()  // <-- checkpoint before canvas resize
+            let hitRect = handleRect.insetBy(dx: -handleHitSlop, dy: -handleHitSlop)  // <—
+            if hitRect.contains(point) {
+                saveUndoState()
                 activeResizeHandle = ResizeHandle(rawValue: i)
                 isResizingCanvas = true
                 dragStartPoint = point
@@ -793,6 +822,7 @@ class CanvasView: NSView {
 
 
         // === Canvas resize ===
+        // === Canvas resize ===
         if isResizingCanvas, let handle = activeResizeHandle {
             let dx = point.x - dragStartPoint.x
             let dy = point.y - dragStartPoint.y
@@ -802,7 +832,7 @@ class CanvasView: NSView {
             case .bottomLeft:
                 newRect.origin.x += dx
                 newRect.origin.y += dy
-                newRect.size.width -= dx
+                newRect.size.width  -= dx
                 newRect.size.height -= dy
             case .bottomCenter:
                 newRect.origin.y += dy
@@ -810,7 +840,7 @@ class CanvasView: NSView {
             case .bottomRight:
                 newRect.origin.y += dy
                 newRect.size.height -= dy
-                newRect.size.width += dx
+                newRect.size.width  += dx
             case .middleLeft:
                 newRect.origin.x += dx
                 newRect.size.width -= dx
@@ -818,19 +848,22 @@ class CanvasView: NSView {
                 newRect.size.width += dx
             case .topLeft:
                 newRect.origin.x += dx
-                newRect.size.width -= dx
+                newRect.size.width  -= dx
                 newRect.size.height += dy
             case .topCenter:
                 newRect.size.height += dy
             case .topRight:
-                newRect.size.width += dx
+                newRect.size.width  += dx
                 newRect.size.height += dy
             }
 
-            if newRect.width < 50 { newRect.size.width = 50 }
+            if newRect.width  < 50 { newRect.size.width  = 50 }
             if newRect.height < 50 { newRect.size.height = 50 }
 
+            // ⬇️ Inform the scroll view live: resize the documentView (this view)
             canvasRect = newRect
+            setFrameSize(newRect.size)
+            invalidateIntrinsicContentSize()
             window?.invalidateCursorRects(for: self)
             needsDisplay = true
             return
@@ -918,8 +951,9 @@ class CanvasView: NSView {
         if currentTool != .zoom { zoomPreviewRect = nil }
         if isResizingCanvas {
             isResizingCanvas = false
+            let handleUsed = activeResizeHandle    // keep it!
+            cropCanvasImageToCanvasRect(using: handleUsed)
             activeResizeHandle = nil
-            cropCanvasImageToCanvasRect()
             needsDisplay = true
             return
         }
@@ -1469,42 +1503,42 @@ class CanvasView: NSView {
         needsDisplay = true
     }
     
-    // Save current state before modifying canvasImage
+    // REPLACE saveUndoState() with this:
     private func saveUndoState() {
-        guard let currentImage = canvasImage else { return }
-        if undoStack.count >= maxUndoSteps {
-            undoStack.removeFirst() // keep last 5 steps
-        }
-        undoStack.append(currentImage.copy() as! NSImage)
-        redoStack.removeAll() // clear redo on new change
+        // snapshot even if image is nil (e.g., clearing/new doc) so size is tracked too
+        let snap = CanvasSnapshot(image: canvasImage?.copy() as? NSImage, rect: canvasRect)
+        if undoStack.count >= maxUndoSteps { undoStack.removeFirst() }
+        undoStack.append(snap)
+        redoStack.removeAll()
     }
-    
+
+    // REPLACE undo() with this:
     @objc func undo() {
-        guard let lastImage = undoStack.popLast() else { return }
-        if let currentImage = canvasImage {
-            redoStack.append(currentImage.copy() as! NSImage)
-        }
-        canvasImage = lastImage.copy() as? NSImage
-        
-        // Reset curve state after undo
-        curvePhase = 0
-        curveStart = .zero
-        curveEnd = .zero
-        control1 = .zero
-        control2 = .zero
-        cancelCurvePreview = false
-
-        needsDisplay = true
+        guard let last = undoStack.popLast() else { return }
+        let current = CanvasSnapshot(image: canvasImage?.copy() as? NSImage, rect: canvasRect)
+        redoStack.append(current)
+        applySnapshot(last)
     }
-    
+
+    // REPLACE redo() with this:
     @objc func redo() {
-        guard let nextImage = redoStack.popLast() else { return }
-        if let currentImage = canvasImage {
-            undoStack.append(currentImage.copy() as! NSImage)
-        }
-        canvasImage = nextImage.copy() as? NSImage
-        
-        // Reset curve state after redo
+        guard let next = redoStack.popLast() else { return }
+        let current = CanvasSnapshot(image: canvasImage?.copy() as? NSImage, rect: canvasRect)
+        undoStack.append(current)
+        applySnapshot(next)
+    }
+
+    // ADD this small helper:
+    private func applySnapshot(_ snap: CanvasSnapshot) {
+        canvasImage = snap.image?.copy() as? NSImage
+        canvasRect  = snap.rect
+
+        // Keep view/scroll sizing in sync WITHOUT re-rendering pixels.
+        setFrameSize(snap.rect.size)
+        invalidateIntrinsicContentSize()
+        window?.invalidateCursorRects(for: self)
+
+        // Reset curve preview state after timeline ops
         curvePhase = 0
         curveStart = .zero
         curveEnd = .zero
@@ -1515,14 +1549,94 @@ class CanvasView: NSView {
         needsDisplay = true
     }
     
-    private func cropCanvasImageToCanvasRect() {
-        // Whether shrinking or growing, rebuild the backing image to the new size
-        let newSize = canvasRect.size
-        resizeBackingImage(to: newSize)
+    private func cropCanvasImageToCanvasRect(using handle: ResizeHandle?) {
+        guard let old = canvasImage else {
+            // No pixels yet; just size the view.
+            let newSize = canvasRect.size
+            canvasRect.origin = .zero
+            setFrameSize(newSize)
+            invalidateIntrinsicContentSize()
+            window?.invalidateCursorRects(for: self)
+            return
+        }
 
-        // After resizing the image we reset origin to zero and ensure our view matches
-        canvasRect.origin = .zero
-        updateCanvasSize(to: newSize)
+        // Map handle -> the *opposite* anchor we want to preserve
+        enum AnchorX { case left, center, right }
+        enum AnchorY { case bottom, center, top }
+        func anchor(for handle: ResizeHandle?) -> (AnchorX, AnchorY) {
+            switch handle {
+            case .some(.bottomLeft):   return (.right, .top)
+            case .some(.bottomCenter): return (.center, .top)
+            case .some(.bottomRight):  return (.left,  .top)
+            case .some(.middleLeft):   return (.right, .center)
+            case .some(.middleRight):  return (.left,  .center)
+            case .some(.topLeft):      return (.right, .bottom)
+            case .some(.topCenter):    return (.center, .bottom)
+            case .some(.topRight):     return (.left,  .bottom)
+            case .none:                return (.left,  .top) // sensible default
+            }
+        }
+
+        let (ax, ay) = anchor(for: handle)
+
+        let newSize = canvasRect.size
+        let oldSize = old.size
+        let drawW = min(oldSize.width,  newSize.width)
+        let drawH = min(oldSize.height, newSize.height)
+
+        // Source offsets inside the old image
+        let srcX: CGFloat = {
+            switch ax {
+            case .left:   return 0
+            case .center: return max(0, (oldSize.width - drawW)  / 2)
+            case .right:  return max(0,  oldSize.width - drawW)
+            }
+        }()
+        let srcY: CGFloat = {
+            // respectFlipped: true ⇒ use top-origin math for “top/center/bottom”
+            switch ay {
+            case .top:    return max(0,  oldSize.height - drawH)
+            case .center: return max(0, (oldSize.height - drawH) / 2)
+            case .bottom: return 0
+            }
+        }()
+
+        // Destination offsets inside the new image
+        let dstX: CGFloat = {
+            switch ax {
+            case .left:   return 0
+            case .center: return max(0, (newSize.width - drawW)  / 2)
+            case .right:  return max(0,  newSize.width - drawW)
+            }
+        }()
+        let dstY: CGFloat = {
+            switch ay {
+            case .top:    return max(0,  newSize.height - drawH)
+            case .center: return max(0, (newSize.height - drawH) / 2)
+            case .bottom: return 0
+            }
+        }()
+
+        let srcRect = NSRect(x: srcX, y: srcY, width: drawW, height: drawH)
+        let dstRect = NSRect(x: dstX, y: dstY, width: drawW, height: drawH)
+
+        // Rebuild the backing image with white background, no scaling
+        let newImage = NSImage(size: newSize)
+        newImage.lockFocus()
+        NSColor.white.setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: newSize)).fill()
+        old.draw(in: dstRect,
+                 from: srcRect,
+                 operation: .copy,
+                 fraction: 1.0,
+                 respectFlipped: true,
+                 hints: [.interpolation: NSImageInterpolation.none])
+        newImage.unlockFocus()
+
+        // Commit without keeping stale vectors (prevents zombie strokes)
+        commitRasterChange(newImage, resetVectors: true)
+        invalidateIntrinsicContentSize()
+        window?.invalidateCursorRects(for: self)
     }
     
     func createTextView(in rect: NSRect) {
@@ -1694,7 +1808,8 @@ class CanvasView: NSView {
 
         // Canvas handles
         for (i, position) in handlePositions.enumerated() {
-            let r = NSRect(x: position.x, y: position.y, width: handleSize, height: handleSize)
+            var r = NSRect(x: position.x, y: position.y, width: handleSize, height: handleSize)
+            r = r.insetBy(dx: -handleHitSlop, dy: -handleHitSlop)                     // <—
             let clipped = r.intersection(bounds)
             if !clipped.isEmpty {
                 addCursorRect(clipped, cursor: cursorForHandle(index: i))

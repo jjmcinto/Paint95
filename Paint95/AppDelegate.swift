@@ -255,6 +255,7 @@ final class StretchSkewSheetController: NSWindowController, NSTextFieldDelegate 
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private weak var activeSaveAsPanel: NSSavePanel?
+    private var lastSavedSnapshot: Data?
     var window: NSWindow?
     private var currentDocumentURL: URL?
     private var isDrawOpaque: Bool = true
@@ -314,6 +315,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         canvasView()?.drawOpaque = isDrawOpaque
+
+        // Establish "clean" baseline for the initial blank canvas
+        DispatchQueue.main.async { [weak self] in
+            self?.refreshBaselineSnapshot()
+        }
     }
 
     // MARK: - Menu bar
@@ -1001,9 +1007,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // NEW: Prompt before destructive actions (New / Open / Exit)
     @objc func fileNew(_ sender: Any?) {
         // If nothing to lose, just clear
-        guard hasImageToPotentiallyLose() else {
+        guard hasUnsavedChanges() else {
             currentDocumentURL = nil
             canvasView()?.clearCanvas()
+            refreshBaselineSnapshot()
             return
         }
 
@@ -1012,10 +1019,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             case .delete:
                 self.currentDocumentURL = nil
                 self.canvasView()?.clearCanvas()
+                self.refreshBaselineSnapshot()
             case .save:
                 if self.performSaveAndReport() {
                     self.currentDocumentURL = nil
                     self.canvasView()?.clearCanvas()
+                    self.refreshBaselineSnapshot()
                 }
             case .cancel:
                 break
@@ -1029,7 +1038,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.showOpenPanelAndLoad()
         }
 
-        guard hasImageToPotentiallyLose() else {
+        guard hasUnsavedChanges() else {
             proceedToOpen()
             return
         }
@@ -1065,13 +1074,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             canvas.needsDisplay = true
 
             self?.currentDocumentURL = url
+            self?.refreshBaselineSnapshot()
         }
     }
 
     // Exit with prompt
     @objc func fileExit(_ sender: Any?) {
         // If nothing to lose, quit immediately
-        guard hasImageToPotentiallyLose() else {
+        guard hasUnsavedChanges() else {
             NSApp.terminate(sender)
             return
         }
@@ -1256,6 +1266,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         do {
             try data.write(to: url)
             print("Saved to \(url.path)")
+            // Refresh baseline now that the on-disk state matches the canvas
+            self.refreshBaselineSnapshot()
         } catch {
             NSSound.beep()
             print("Save error: \(error)")
@@ -1817,10 +1829,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private enum DiscardChoice { case delete, save, cancel }
 
-    /// Return true if there's any canvas content worth prompting for.
-    private func hasImageToPotentiallyLose() -> Bool {
-        guard let canvas = canvasView() else { return false }
-        return (canvas.canvasImage != nil)
+    // PNG snapshot of current canvas for change detection
+    private func currentCanvasSnapshotPNG() -> Data? {
+        guard let image = snapshotCanvas() ?? canvasView()?.canvasImage else { return nil }
+        guard
+            let tiff = image.tiffRepresentation,
+            let rep  = NSBitmapImageRep(data: tiff),
+            let data = rep.representation(using: .png, properties: [:])
+        else { return nil }
+        return data
+    }
+
+    // Update the baseline to "no unsaved changes"
+    private func refreshBaselineSnapshot() {
+        self.lastSavedSnapshot = currentCanvasSnapshotPNG()
+    }
+
+    // Returns true only if current canvas differs from the baseline
+    private func hasUnsavedChanges() -> Bool {
+        let now = currentCanvasSnapshotPNG()
+        return now != lastSavedSnapshot
     }
 
     /// Present "Do you want to keep the current image?" with Delete (far left) / Cancel / Save (far right).
