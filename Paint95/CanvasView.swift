@@ -77,13 +77,11 @@ extension CanvasView {
     /// Uses the app's undo stack (image+rect), so Undo restores pixels *and* size with no scaling.
     func setCanvasSizeAnchoredTopLeft(to newSize: NSSize) {
         initializeCanvasIfNeeded()
-        // Snapshot BEFORE change (image + rect)
         saveUndoState()
 
         guard let image = canvasImage else {
             canvasRect.origin = .zero
             canvasRect.size   = newSize
-            // Keep view in sync without re-drawing pixels
             setFrameSize(newSize)
             invalidateIntrinsicContentSize()
             window?.invalidateCursorRects(for: self)
@@ -92,41 +90,38 @@ extension CanvasView {
         }
 
         let oldSize = image.size
+        let drawW = min(oldSize.width,  newSize.width)
+        let drawH = min(oldSize.height, newSize.height)
+
+        // choose TOP-LEFT piece from the old image
+        let srcY = max(0, oldSize.height - drawH)
+        let srcRect = NSRect(x: 0, y: srcY, width: drawW, height: drawH)
+
+        // ⬇️ always paste at (0,0) so bottom-left of kept content is at (0,0)
+        let dstRect = NSRect(x: 0, y: 0, width: drawW, height: drawH)
+
         let newImage = NSImage(size: newSize)
-
-        // Overlap
-        let drawWidth  = min(oldSize.width,  newSize.width)
-        let drawHeight = min(oldSize.height, newSize.height)
-
-        // TOP-LEFT anchoring (account for AppKit’s base coords)
-        let sourceY = max(0, oldSize.height - drawHeight)
-        let destY   = max(0, newSize.height - drawHeight)
-
-        let sourceRect = NSRect(x: 0, y: sourceY, width: drawWidth, height: drawHeight)
-        let destRect   = NSRect(x: 0, y: destY,   width: drawWidth, height: drawHeight)
-
         newImage.lockFocus()
         NSColor.white.setFill()
         NSBezierPath(rect: NSRect(origin: .zero, size: newSize)).fill()
-        image.draw(
-            in: destRect,
-            from: sourceRect,
-            operation: .copy,
-            fraction: 1.0,
-            respectFlipped: true,
-            hints: [.interpolation: NSImageInterpolation.none]
-        )
+        image.draw(in: dstRect,
+                   from: srcRect,
+                   operation: .copy,
+                   fraction: 1.0,
+                   respectFlipped: true,
+                   hints: [.interpolation: NSImageInterpolation.none])
         newImage.unlockFocus()
-        
-        // Commit new pixels/size and drop vector cache so old strokes can’t resurrect
+
+        // Bake + clear vectors; commitRasterChange will zero the origin
         commitRasterChange(newImage, resetVectors: true)
 
-        // Keep view/scroll sizing in sync WITHOUT calling updateCanvasSize(to:)
+        // Keep the scroll view in sync right away
         setFrameSize(newSize)
         invalidateIntrinsicContentSize()
         window?.invalidateCursorRects(for: self)
         needsDisplay = true
     }
+
     
     /// Restores a previous canvas image and rect exactly, and registers the inverse for redo.
     private func restoreCanvas(image: NSImage?, rect: NSRect) {
@@ -951,9 +946,61 @@ class CanvasView: NSView {
         if currentTool != .zoom { zoomPreviewRect = nil }
         if isResizingCanvas {
             isResizingCanvas = false
-            let handleUsed = activeResizeHandle    // keep it!
-            cropCanvasImageToCanvasRect(using: handleUsed)
+
+            // Remember which axes went negative during the drag,
+            // BEFORE the commit resets canvasRect.origin to (0,0)
+            let needZeroX = canvasRect.minX < 0
+            let needZeroY = canvasRect.minY < 0
+
+            let handleUsed = activeResizeHandle
+            cropCanvasImageToCanvasRect(using: handleUsed)   // commits pixels, re-calibrates to (0,0)
             activeResizeHandle = nil
+
+            // Defer to next runloop so NSScrollView finishes its own adjustments first
+            if let sv = enclosingScrollView {
+                DispatchQueue.main.async { [weak self, weak sv] in
+                    guard let self = self, let sv = sv else { return }
+                    let clip = sv.contentView
+
+                    if needZeroX || needZeroY {
+                        // For negative drags, pin scrollers to zero on the affected axes.
+                        var o = clip.bounds.origin
+                        if needZeroX { o.x = 0 }
+                        if needZeroY { o.y = 0 }
+                        clip.setBoundsOrigin(o)
+                        sv.reflectScrolledClipView(clip)
+
+                        // Ensure (0,0) is in view.
+                        self.scrollToVisible(NSRect(x: 0, y: 0, width: 1, height: 1))
+                    } else if let h = handleUsed {
+                        // For positive-only drags (e.g., top/right), keep the dragged corner visible.
+                        let w = self.canvasRect.width
+                        let hgt = self.canvasRect.height
+                        let anchorRect: NSRect
+                        switch h {
+                        case .topRight:
+                            anchorRect = NSRect(x: w - 1, y: hgt - 1, width: 1, height: 1)
+                        case .topCenter:
+                            anchorRect = NSRect(x: w / 2,  y: hgt - 1, width: 1, height: 1)
+                        case .middleRight:
+                            anchorRect = NSRect(x: w - 1,  y: hgt / 2, width: 1, height: 1)
+                        case .topLeft:
+                            anchorRect = NSRect(x: 1,      y: hgt - 1, width: 1, height: 1)
+                        case .bottomRight:
+                            anchorRect = NSRect(x: w - 1,  y: 1,       width: 1, height: 1)
+                        case .bottomCenter:
+                            anchorRect = NSRect(x: w / 2,  y: 1,       width: 1, height: 1)
+                        case .middleLeft:
+                            anchorRect = NSRect(x: 1,      y: hgt / 2, width: 1, height: 1)
+                        case .bottomLeft:
+                            anchorRect = NSRect(x: 0,      y: 0,       width: 1, height: 1)
+                        }
+
+                        self.scrollToVisible(anchorRect)
+                    }
+                }
+            }
+
             needsDisplay = true
             return
         }
@@ -987,11 +1034,6 @@ class CanvasView: NSView {
                 commitSelection()
                 return
             }
-        } else if isResizingCanvas {
-            isResizingCanvas = false
-            activeResizeHandle = nil
-            needsDisplay = true
-            return
         }
 
         // === Commit pasted content only if mouse up outside the selection frame ===
@@ -1551,29 +1593,29 @@ class CanvasView: NSView {
     
     private func cropCanvasImageToCanvasRect(using handle: ResizeHandle?) {
         guard let old = canvasImage else {
-            // No pixels yet; just size the view.
+            // No pixels yet—just size the view/document and snap to (0,0)
             let newSize = canvasRect.size
-            canvasRect.origin = .zero
+            canvasRect = NSRect(origin: .zero, size: newSize)
             setFrameSize(newSize)
             invalidateIntrinsicContentSize()
             window?.invalidateCursorRects(for: self)
             return
         }
 
-        // Map handle -> the *opposite* anchor we want to preserve
+        // Map handle → the *opposite* anchor we keep existing pixels stuck to.
         enum AnchorX { case left, center, right }
         enum AnchorY { case bottom, center, top }
         func anchor(for handle: ResizeHandle?) -> (AnchorX, AnchorY) {
             switch handle {
-            case .some(.bottomLeft):   return (.right, .top)
-            case .some(.bottomCenter): return (.center, .top)
-            case .some(.bottomRight):  return (.left,  .top)
-            case .some(.middleLeft):   return (.right, .center)
-            case .some(.middleRight):  return (.left,  .center)
-            case .some(.topLeft):      return (.right, .bottom)
-            case .some(.topCenter):    return (.center, .bottom)
-            case .some(.topRight):     return (.left,  .bottom)
-            case .none:                return (.left,  .top) // sensible default
+            case .some(.bottomLeft):   return (.right, .top)     // grow BL ⇒ blank at BL
+            case .some(.bottomCenter): return (.center, .top)    // grow bottom ⇒ blank at bottom
+            case .some(.bottomRight):  return (.left,  .top)     // grow BR ⇒ blank at BR
+            case .some(.middleLeft):   return (.right, .center)  // grow left ⇒ blank at left
+            case .some(.middleRight):  return (.left,  .center)  // grow right ⇒ blank at right
+            case .some(.topLeft):      return (.right, .bottom)  // grow TL ⇒ blank at TL
+            case .some(.topCenter):    return (.center, .bottom) // grow top ⇒ blank at top
+            case .some(.topRight):     return (.left,  .bottom)  // grow TR ⇒ blank at TR
+            case .none:                return (.left,  .top)     // menu/default (classic TL anchor)
             }
         }
 
@@ -1584,16 +1626,16 @@ class CanvasView: NSView {
         let drawW = min(oldSize.width,  newSize.width)
         let drawH = min(oldSize.height, newSize.height)
 
-        // Source offsets inside the old image
+        // Source offsets inside the old image (which region survives)
         let srcX: CGFloat = {
             switch ax {
             case .left:   return 0
-            case .center: return max(0, (oldSize.width - drawW)  / 2)
-            case .right:  return max(0,  oldSize.width - drawW)
+            case .center: return max(0, (oldSize.width  - drawW) / 2)
+            case .right:  return max(0,  oldSize.width  - drawW)
             }
         }()
         let srcY: CGFloat = {
-            // respectFlipped: true ⇒ use top-origin math for “top/center/bottom”
+            // respectFlipped: true → top-origin math
             switch ay {
             case .top:    return max(0,  oldSize.height - drawH)
             case .center: return max(0, (oldSize.height - drawH) / 2)
@@ -1601,12 +1643,12 @@ class CanvasView: NSView {
             }
         }()
 
-        // Destination offsets inside the new image
+        // Destination offsets inside the new image (where that region lands)
         let dstX: CGFloat = {
             switch ax {
             case .left:   return 0
-            case .center: return max(0, (newSize.width - drawW)  / 2)
-            case .right:  return max(0,  newSize.width - drawW)
+            case .center: return max(0, (newSize.width  - drawW) / 2)
+            case .right:  return max(0,  newSize.width  - drawW)
             }
         }()
         let dstY: CGFloat = {
@@ -1617,10 +1659,10 @@ class CanvasView: NSView {
             }
         }()
 
-        let srcRect = NSRect(x: srcX, y: srcY, width: drawW, height: drawH)
-        let dstRect = NSRect(x: dstX, y: dstY, width: drawW, height: drawH)
+        // Build new image (white background), copy overlap 1:1 (no scaling).
+        let srcRect = NSRect(x: floor(srcX), y: floor(srcY), width: floor(drawW), height: floor(drawH))
+        let dstRect = NSRect(x: floor(dstX), y: floor(dstY), width: floor(drawW), height: floor(drawH))
 
-        // Rebuild the backing image with white background, no scaling
         let newImage = NSImage(size: newSize)
         newImage.lockFocus()
         NSColor.white.setFill()
@@ -1633,8 +1675,13 @@ class CanvasView: NSView {
                  hints: [.interpolation: NSImageInterpolation.none])
         newImage.unlockFocus()
 
-        // Commit without keeping stale vectors (prevents zombie strokes)
+        // Commit (drop vector cache to prevent ghost strokes)
         commitRasterChange(newImage, resetVectors: true)
+
+        // Re-calibrate model/view to (0,0) and sync with the scroll view; leave actual
+        // scroll position correction to mouseUp (deferred) to avoid AppKit overriding it.
+        canvasRect = NSRect(origin: .zero, size: newSize)
+        setFrameSize(newSize)
         invalidateIntrinsicContentSize()
         window?.invalidateCursorRects(for: self)
     }
