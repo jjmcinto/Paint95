@@ -246,8 +246,14 @@ class CanvasView: NSView {
     //Zoom
     var isZoomed: Bool = false
     var zoomRect: NSRect = .zero
-    //var zoomPreviewRect: NSRect = .zero
+    var zoomScale: CGFloat = 1.0
     var mousePosition: NSPoint = .zero
+    override var intrinsicContentSize: NSSize {
+        return isZoomed
+            ? NSSize(width: canvasRect.width * zoomScale,
+                     height: canvasRect.height * zoomScale)
+            : canvasRect.size
+    }
     
     // MARK: Zoom preview
     private var zoomPreviewRect: NSRect? {
@@ -419,7 +425,7 @@ class CanvasView: NSView {
     
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        
+
         // === Canvas image drawing ===
         if isResizingCanvas {
             let originalRect = NSRect(origin: .zero, size: canvasImage?.size ?? .zero)
@@ -430,162 +436,192 @@ class CanvasView: NSView {
             let path = NSBezierPath(rect: canvasRect)
             path.setLineDash(dashPattern, count: dashPattern.count, phase: 0)
             path.stroke()
+
         } else if isZoomed {
             guard let image = canvasImage else { return }
-            let magnified = NSImage(size: canvasRect.size)
-            magnified.lockFocus()
-            image.draw(in: canvasRect, from: zoomRect, operation: .copy, fraction: 1.0)
-            magnified.unlockFocus()
-            magnified.draw(in: canvasRect)
+
+            // Draw the WHOLE canvas scaled. Scrolling now pans naturally.
+            let dest = NSRect(x: 0, y: 0,
+                              width:  canvasRect.width  * zoomScale,
+                              height: canvasRect.height * zoomScale)
+            image.draw(in: dest,
+                       from: NSRect(origin: .zero, size: canvasRect.size),
+                       operation: .copy,
+                       fraction: 1.0,
+                       respectFlipped: true,
+                       hints: [.interpolation: NSImageInterpolation.none])
+
         } else {
             canvasImage?.draw(in: canvasRect)
-            if currentTool == .zoom {
+
+            // Zoom preview box when not zoomed yet
+            if currentTool == .zoom, let zr = zoomPreviewRect {
                 NSColor.black.setStroke()
-                if let zoomRect = zoomPreviewRect {
-                    let path = NSBezierPath(rect: zoomRect)
-                    path.lineWidth = 1
-                    path.stroke()  // now solid line, no dashes
-                }
+                let path = NSBezierPath(rect: zr)
+                path.lineWidth = 1
+                path.stroke()
             }
         }
 
-        // === Selected image preview ===
+        // === Selected image / marquee preview ===
         if let image = selectedImage, let io = selectedImageOrigin {
-            let selectionFrame = NSRect(origin: io, size: image.size)
-            let visiblePortion = selectionFrame.intersection(canvasRect)
-            if !visiblePortion.isEmpty {
-                NSGraphicsContext.saveGraphicsState()
-                let clipPath = NSBezierPath(rect: canvasRect)
-                clipPath.addClip()
-                image.draw(at: io, from: .zero, operation: .sourceOver, fraction: 1.0)
-                NSGraphicsContext.restoreGraphicsState()
-            }
-
-            NSColor.black.setStroke()
-            let dashPattern: [CGFloat] = [5.0, 3.0]
-            let path = NSBezierPath(rect: selectionFrame.intersection(canvasRect))
-            path.setLineDash(dashPattern, count: dashPattern.count, phase: 0)
-            path.lineWidth = 1
-            path.stroke()
-
-            let handleSize: CGFloat = 6
-            let handles = [
-                NSPoint(x: selectionFrame.minX - handleSize/2, y: selectionFrame.minY - handleSize/2),
-                NSPoint(x: selectionFrame.midX - handleSize/2, y: selectionFrame.minY - handleSize/2),
-                NSPoint(x: selectionFrame.maxX - handleSize/2, y: selectionFrame.minY - handleSize/2),
-                NSPoint(x: selectionFrame.minX - handleSize/2, y: selectionFrame.midY - handleSize/2),
-                NSPoint(x: selectionFrame.maxX - handleSize/2, y: selectionFrame.midY - handleSize/2),
-                NSPoint(x: selectionFrame.minX - handleSize/2, y: selectionFrame.maxY - handleSize/2),
-                NSPoint(x: selectionFrame.midX - handleSize/2, y: selectionFrame.maxY - handleSize/2),
-                NSPoint(x: selectionFrame.maxX - handleSize/2, y: selectionFrame.maxY - handleSize/2)
-            ]
-            NSColor.systemBlue.setFill()
-            for p in handles {
-                NSBezierPath(rect: NSRect(x: p.x, y: p.y, width: handleSize, height: handleSize)).fill()
-            }
-        } else if let rect = selectionRect {
-            NSColor.black.setStroke()
-            let dashPattern: [CGFloat] = [5.0, 3.0]
-            let path = NSBezierPath(rect: rect)
-            path.setLineDash(dashPattern, count: dashPattern.count, phase: 0)
-            path.lineWidth = 1
-            path.stroke()
-        }
-
-        if let previewPath = currentPath {
-            currentColour.setStroke()
-            previewPath.stroke()
-        }
-
-        // === Curve preview (always show active curve stage) ===
-        if currentTool == .curve && !cancelCurvePreview {
-            var start = curveStart
-            var end = curveEnd
-            var c1 = control1
-            var c2 = control2
-
             if isZoomed {
-                let scaleX = canvasRect.width / zoomRect.width
-                let scaleY = canvasRect.height / zoomRect.height
-                let originX = zoomRect.origin.x
-                let originY = zoomRect.origin.y
+                let dest = NSRect(origin: toZoomed(io),
+                                  size: NSSize(width: image.size.width  * zoomScale,
+                                               height: image.size.height * zoomScale))
 
-                func zoomed(_ p: NSPoint) -> NSPoint {
-                    return NSPoint(x: (p.x - originX) * scaleX,
-                                   y: (p.y - originY) * scaleY)
+                NSGraphicsContext.saveGraphicsState()
+                NSBezierPath(rect: NSRect(x: 0, y: 0,
+                                          width:  canvasRect.width  * zoomScale,
+                                          height: canvasRect.height * zoomScale)).addClip()
+                image.draw(in: dest, from: .zero, operation: .sourceOver, fraction: 1.0)
+                NSGraphicsContext.restoreGraphicsState()
+
+                NSColor.black.setStroke()
+                let path = NSBezierPath(rect: dest)
+                path.setLineDash([5.0, 3.0], count: 2, phase: 0)
+                path.lineWidth = 1
+                path.stroke()
+
+                // selection handles (scaled)
+                let handleSize: CGFloat = 6 * zoomScale
+                NSColor.systemBlue.setFill()
+                for p in [
+                    NSPoint(x: dest.minX - handleSize/2, y: dest.minY - handleSize/2),
+                    NSPoint(x: dest.midX - handleSize/2, y: dest.minY - handleSize/2),
+                    NSPoint(x: dest.maxX - handleSize/2, y: dest.minY - handleSize/2),
+                    NSPoint(x: dest.minX - handleSize/2, y: dest.midY - handleSize/2),
+                    NSPoint(x: dest.maxX - handleSize/2, y: dest.midY - handleSize/2),
+                    NSPoint(x: dest.minX - handleSize/2, y: dest.maxY - handleSize/2),
+                    NSPoint(x: dest.midX - handleSize/2, y: dest.maxY - handleSize/2),
+                    NSPoint(x: dest.maxX - handleSize/2, y: dest.maxY - handleSize/2),
+                ] {
+                    NSBezierPath(rect: NSRect(x: p.x, y: p.y, width: handleSize, height: handleSize)).fill()
                 }
 
-                start = zoomed(start)
-                end = zoomed(end)
-                c1 = zoomed(c1)
-                c2 = zoomed(c2)
+            } else {
+                let selectionFrame = NSRect(origin: io, size: image.size)
+                let visiblePortion = selectionFrame.intersection(canvasRect)
+                if !visiblePortion.isEmpty {
+                    NSGraphicsContext.saveGraphicsState()
+                    let clipPath = NSBezierPath(rect: canvasRect)
+                    clipPath.addClip()
+                    image.draw(at: io, from: .zero, operation: .sourceOver, fraction: 1.0)
+                    NSGraphicsContext.restoreGraphicsState()
+                }
+
+                NSColor.black.setStroke()
+                let dashPattern: [CGFloat] = [5.0, 3.0]
+                let path = NSBezierPath(rect: selectionFrame.intersection(canvasRect))
+                path.setLineDash(dashPattern, count: dashPattern.count, phase: 0)
+                path.lineWidth = 1
+                path.stroke()
+
+                let handleSize: CGFloat = 6
+                NSColor.systemBlue.setFill()
+                for p in [
+                    NSPoint(x: selectionFrame.minX - handleSize/2, y: selectionFrame.minY - handleSize/2),
+                    NSPoint(x: selectionFrame.midX - handleSize/2, y: selectionFrame.minY - handleSize/2),
+                    NSPoint(x: selectionFrame.maxX - handleSize/2, y: selectionFrame.minY - handleSize/2),
+                    NSPoint(x: selectionFrame.minX - handleSize/2, y: selectionFrame.midY - handleSize/2),
+                    NSPoint(x: selectionFrame.maxX - handleSize/2, y: selectionFrame.midY - handleSize/2),
+                    NSPoint(x: selectionFrame.minX - handleSize/2, y: selectionFrame.maxY - handleSize/2),
+                    NSPoint(x: selectionFrame.midX - handleSize/2, y: selectionFrame.maxY - handleSize/2),
+                    NSPoint(x: selectionFrame.maxX - handleSize/2, y: selectionFrame.maxY - handleSize/2),
+                ] {
+                    NSBezierPath(rect: NSRect(x: p.x, y: p.y, width: handleSize, height: handleSize)).fill()
+                }
             }
+
+        } else if let rect = selectionRect {
+            if isZoomed {
+                let rZ = toZoomed(rect)
+                NSColor.black.setStroke()
+                let path = NSBezierPath(rect: rZ)
+                path.setLineDash([5.0, 3.0], count: 2, phase: 0)
+                path.lineWidth = 1
+                path.stroke()
+            } else {
+                NSColor.black.setStroke()
+                let path = NSBezierPath(rect: rect)
+                path.setLineDash([5.0, 3.0], count: 2, phase: 0)
+                path.lineWidth = 1
+                path.stroke()
+            }
+        }
+
+        // === Curve / shapes / text previews ===
+        if currentTool == .curve && !cancelCurvePreview {
+            var start = startPoint, end = endPoint, c1 = control1, c2 = control2
+            if isZoomed { start = toZoomed(start); end = toZoomed(end); c1 = toZoomed(c1); c2 = toZoomed(c2) }
 
             let path = NSBezierPath()
-            path.lineWidth = toolSize
+            path.lineWidth = toolSize * (isZoomed ? zoomScale : 1)
             currentColour.set()
-
             switch curvePhase {
-            case 0:
-                if start != end {
-                    path.move(to: start)
-                    path.line(to: end)
-                    path.stroke()
-                }
-            case 1:
-                path.move(to: start)
-                path.curve(to: end, controlPoint1: c1, controlPoint2: c1)
-                path.stroke()
-            case 2:
-                path.move(to: start)
-                path.curve(to: end, controlPoint1: c1, controlPoint2: c2)
-                path.stroke()
-            default:
-                break
+            case 0: if start != end { path.move(to: start); path.line(to: end); path.stroke() }
+            case 1: path.move(to: start); path.curve(to: end, controlPoint1: c1, controlPoint2: c1); path.stroke()
+            case 2: path.move(to: start); path.curve(to: end, controlPoint1: c1, controlPoint2: c2); path.stroke()
+            default: break
             }
             cancelCurvePreview = false
-        }
-        else if isDrawingShape {
+
+        } else if isDrawingShape {
             currentColour.set()
-            var start = startPoint
-            var end = endPoint
-
-            if isZoomed {
-                let scaleX = canvasRect.width / zoomRect.width
-                let scaleY = canvasRect.height / zoomRect.height
-                start.x = (start.x - zoomRect.origin.x) * scaleX
-                start.y = (start.y - zoomRect.origin.y) * scaleY
-                end.x   = (end.x   - zoomRect.origin.x) * scaleX
-                end.y   = (end.y   - zoomRect.origin.y) * scaleY
-            }
-
+            var start = startPoint, end = endPoint
+            if isZoomed { start = toZoomed(start); end = toZoomed(end) }
             if let shapePath = shapePathBetween(start, end) {
-                shapePath.lineWidth = toolSize
+                shapePath.lineWidth = toolSize * (isZoomed ? zoomScale : 1)
                 shapePath.stroke()
             }
-        }
-        else if isCreatingText {
+
+        } else if isCreatingText {
             NSColor.gray.setStroke()
-            let path = NSBezierPath(rect: textBoxRect)
-            let dashPattern: [CGFloat] = [4, 2]
-            path.setLineDash(dashPattern, count: dashPattern.count, phase: 0)
+            let r = isZoomed ? toZoomed(textBoxRect) : textBoxRect
+            let path = NSBezierPath(rect: r)
+            path.setLineDash([4, 2], count: 2, phase: 0)
             path.lineWidth = 1
             path.stroke()
         }
 
-        NSColor.black.setStroke()
-        NSBezierPath(rect: canvasRect).stroke()
+        // === Canvas border & resize handles ===
+        if isZoomed {
+            let border = NSRect(x: 0, y: 0, width: canvasRect.width * zoomScale, height: canvasRect.height * zoomScale)
+            NSColor.black.setStroke()
+            NSBezierPath(rect: border).stroke()
 
-        NSColor.systemBlue.setFill()
-        for position in handlePositions {
-            let rect = NSRect(x: position.x, y: position.y, width: handleSize, height: handleSize)
-            NSBezierPath(rect: rect).fill()
-        }
-        
-        if currentTool == .zoom, let r = zoomPreviewRect {
-            NSColor.keyboardFocusIndicatorColor.setStroke()
-            NSBezierPath(rect: r).setLineDash([4,4], count: 2, phase: 0)
-            NSBezierPath(rect: r).stroke()
+            // Handles at the scaled corners/edges (visible when you scroll to edges)
+            let hs = handleSize * zoomScale
+            NSColor.systemBlue.setFill()
+            for p in [
+                NSPoint(x: border.minX - hs/2, y: border.minY - hs/2),               // bottom-left
+                NSPoint(x: border.midX - hs/2, y: border.minY - hs/2),               // bottom-center
+                NSPoint(x: border.maxX - hs/2, y: border.minY - hs/2),               // bottom-right
+                NSPoint(x: border.minX - hs/2, y: border.midY - hs/2),               // middle-left
+                NSPoint(x: border.maxX - hs/2, y: border.midY - hs/2),               // middle-right
+                NSPoint(x: border.minX - hs/2, y: border.maxY - hs/2),               // top-left
+                NSPoint(x: border.midX - hs/2, y: border.maxY - hs/2),               // top-center
+                NSPoint(x: border.maxX - hs/2, y: border.maxY - hs/2)                // top-right
+            ] {
+                NSBezierPath(rect: NSRect(x: p.x, y: p.y, width: hs, height: hs)).fill()
+            }
+
+        } else {
+            NSColor.black.setStroke()
+            NSBezierPath(rect: canvasRect).stroke()
+
+            NSColor.systemBlue.setFill()
+            for position in handlePositions {
+                let r = NSRect(x: position.x, y: position.y, width: handleSize, height: handleSize)
+                NSBezierPath(rect: r).fill()
+            }
+
+            if currentTool == .zoom, let r = zoomPreviewRect {
+                NSColor.keyboardFocusIndicatorColor.setStroke()
+                let path = NSBezierPath(rect: r)
+                path.setLineDash([4, 4], count: 2, phase: 0)
+                path.stroke()
+            }
         }
     }
     
@@ -683,32 +719,32 @@ class CanvasView: NSView {
                 selectedImage = nil
                 self.window?.makeFirstResponder(self)
             }
-
+            
         case .spray:
             currentSprayPoint = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
             startSpray()
-
+            
         case .text:
             startPoint = point
             isCreatingText = true
-
+            
         case .eyeDropper:
             if let picked = pickColour(at: point) {
                 currentColour = picked
                 NotificationCenter.default.post(name: .colourPicked, object: picked)
                 colourFromSelectionWindow = false
             }
-
+            
         case .pencil, .brush, .eraser:
             saveUndoState()  // <-- checkpoint at stroke start
             startPoint = point
             currentPath = NSBezierPath()
             currentPath?.move(to: point)
-
+            
         case .fill:
             saveUndoState()
             floodFill(from: point, with: currentColour)
-
+            
         case .curve:
             switch curvePhase {
             case 0:
@@ -718,24 +754,43 @@ class CanvasView: NSView {
             default:
                 break
             }
-
+            
         case .line, .rect, .roundRect, .ellipse:
             saveUndoState()  // <-- checkpoint at start of shape
             startPoint = point
             endPoint = point
             isDrawingShape = true
-
+            
         case .zoom:
             if isZoomed {
+                // Exit zoom
                 isZoomed = false
-                zoomRect = .zero
+                zoomScale = 1.0
+                updateZoomDocumentSize()
                 needsDisplay = true
             } else {
-                let zoomSize: CGFloat = 100
-                let point = convert(event.locationInWindow, from: nil)
-                zoomRect = NSRect(x: point.x - zoomSize/2, y: point.y - zoomSize/2,
-                                  width: zoomSize, height: zoomSize)
+                // Enter zoom using the current preview box if available
+                let p = convert(event.locationInWindow, from: nil)
+                let zr = zoomPreviewRect ?? NSRect(x: p.x - 64, y: p.y - 64, width: 128, height: 128)
+                
+                // Use the scrollview’s visible size as our viewport
+                let viewport = (enclosingScrollView?.contentView.bounds.size) ?? bounds.size
+                
+                // Uniform scale so zr * scale fits in viewport
+                let sx = max(1, viewport.width  / max(1, zr.width))
+                let sy = max(1, viewport.height / max(1, zr.height))
+                zoomScale = min(sx, sy)
+                
                 isZoomed = true
+                updateZoomDocumentSize()
+                
+                // Scroll so the zoomed preview rect is visible
+                let target = NSRect(x: zr.origin.x * zoomScale,
+                                    y: zr.origin.y * zoomScale,
+                                    width:  zr.size.width  * zoomScale,
+                                    height: zr.size.height * zoomScale)
+                scrollToVisible(target)
+                
                 needsDisplay = true
             }
         }
@@ -1686,6 +1741,45 @@ class CanvasView: NSView {
         window?.invalidateCursorRects(for: self)
     }
     
+    // MARK: - Uniform zoom helpers (1:1 pixel aspect with letterboxing)
+    private func updateZoomDocumentSize() {
+        let size = isZoomed
+            ? NSSize(width: floor(canvasRect.width  * zoomScale),
+                     height: floor(canvasRect.height * zoomScale))
+            : canvasRect.size
+
+        setFrameSize(size)
+        invalidateIntrinsicContentSize()
+        window?.invalidateCursorRects(for: self)
+    }
+    
+    private func zoomScaleAndOffset() -> (scale: CGFloat, offset: NSPoint) {
+        let s = min(canvasRect.width / zoomRect.width,
+                    canvasRect.height / zoomRect.height)
+        let ox = (canvasRect.width  - zoomRect.width  * s) * 0.5
+        let oy = (canvasRect.height - zoomRect.height * s) * 0.5
+        return (s, NSPoint(x: ox, y: oy))
+    }
+
+    private func toZoomed(_ p: NSPoint) -> NSPoint {
+        return isZoomed ? NSPoint(x: p.x * zoomScale, y: p.y * zoomScale) : p
+    }
+    private func toZoomed(_ r: NSRect) -> NSRect {
+        return isZoomed
+            ? NSRect(x: r.origin.x * zoomScale,
+                     y: r.origin.y * zoomScale,
+                     width:  r.size.width * zoomScale,
+                     height: r.size.height * zoomScale)
+            : r
+    }
+
+    private func fromZoomed(_ p: NSPoint) -> NSPoint {
+        let (s, o) = zoomScaleAndOffset()
+        return NSPoint(x: zoomRect.origin.x + (p.x - o.x) / s,
+                       y: zoomRect.origin.y + (p.y - o.y) / s)
+    }
+
+    
     func createTextView(in rect: NSRect) {
         textView?.removeFromSuperview()
         
@@ -1853,24 +1947,34 @@ class CanvasView: NSView {
     override func resetCursorRects() {
         super.resetCursorRects()
 
-        // Canvas handles
+        // Scale factor in Zoom Mode (1.0 otherwise)
+        let s: CGFloat = isZoomed ? zoomScale : 1.0
+
+        // Canvas handles (scale hit areas when zoomed)
         for (i, position) in handlePositions.enumerated() {
-            var r = NSRect(x: position.x, y: position.y, width: handleSize, height: handleSize)
-            r = r.insetBy(dx: -handleHitSlop, dy: -handleHitSlop)                     // <—
+            let posV = isZoomed ? NSPoint(x: position.x * s, y: position.y * s) : position
+            var r = NSRect(x: posV.x, y: posV.y, width: handleSize * s, height: handleSize * s)
+            r = r.insetBy(dx: -handleHitSlop * s, dy: -handleHitSlop * s)
             let clipped = r.intersection(bounds)
             if !clipped.isEmpty {
                 addCursorRect(clipped, cursor: cursorForHandle(index: i))
             }
         }
 
-        // Selection handles (see fix #2 below)
+        // Selection handles (scale when zoomed)
         if let selectionFrame = (selectedImage != nil
             ? NSRect(origin: selectedImageOrigin ?? .zero, size: selectedImage!.size)
             : selectionRect) {
 
             let selectionHandles = selectionHandlePositions(rect: selectionFrame)
-            for (i, r) in selectionHandles.enumerated() {
-                let clipped = r.intersection(bounds)
+            for (i, r0) in selectionHandles.enumerated() {
+                let rV = isZoomed
+                    ? NSRect(x: r0.origin.x * s,
+                             y: r0.origin.y * s,
+                             width:  r0.size.width * s,
+                             height: r0.size.height * s)
+                    : r0
+                let clipped = rV.intersection(bounds)
                 if !clipped.isEmpty {
                     addCursorRect(clipped, cursor: selectionCursorForHandle(index: i))
                 }
@@ -1913,17 +2017,10 @@ class CanvasView: NSView {
         }
     }
     
+    // View (scaled) → canvas (unscaled)
     func convertZoomedPointToCanvas(_ point: NSPoint) -> NSPoint {
         guard isZoomed else { return point }
-
-        let scaleX = zoomRect.width / canvasRect.width
-        let scaleY = zoomRect.height / canvasRect.height
-        
-        // Convert from full-size display to original canvas coordinates
-        let adjustedX = zoomRect.origin.x + point.x * scaleX
-        let adjustedY = zoomRect.origin.y + point.y * scaleY
-
-        return NSPoint(x: adjustedX, y: adjustedY)
+        return NSPoint(x: point.x / zoomScale, y: point.y / zoomScale)
     }
     
     override func setFrameSize(_ newSize: NSSize) {
@@ -1941,13 +2038,10 @@ class CanvasView: NSView {
         canvasImage?.unlockFocus()
     }
     
+    // Kept for symmetry/back-compat; same mapping
     func convertZoomedPoint(_ point: NSPoint) -> NSPoint {
-        // zoomRect maps to full canvasRect
-        let scaleX = canvasRect.width / zoomRect.width
-        let scaleY = canvasRect.height / zoomRect.height
-        let translatedX = zoomRect.origin.x + point.x / scaleX
-        let translatedY = zoomRect.origin.y + point.y / scaleY
-        return NSPoint(x: translatedX, y: translatedY)
+        guard isZoomed else { return point }
+        return NSPoint(x: point.x / zoomScale, y: point.y / zoomScale)
     }
     
     func clearCanvas() {
@@ -2306,13 +2400,6 @@ class CanvasView: NSView {
         }
 
         emitStatusUpdate(cursor: mousePosition)
-    }
-
-
-    
-    // Make the scroll view ask for our size when needed
-    override var intrinsicContentSize: NSSize {
-        return canvasRect.size
     }
     
     /// Make all pixels that match `key` (within `tolerance`) transparent.
