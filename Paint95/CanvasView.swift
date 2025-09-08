@@ -241,6 +241,8 @@ class CanvasView: NSView {
     var resizeStartPoint: NSPoint = .zero
     var originalSelectionRect: NSRect = .zero
     var originalSelectedImage: NSImage? = nil
+    private let edgeGrabThickness: CGFloat = 6     // how close to an edge to start resizing
+    private let cornerGrabSize: CGFloat = 12       // square size around corners for diagonal resize
     
     //Zoom
     var isZoomed: Bool = false
@@ -598,37 +600,14 @@ class CanvasView: NSView {
             path.stroke()
         }
 
-        // === Canvas border & resize handles ===
+        // === Canvas border (no handles) ===
         if isZoomed {
             let border = NSRect(x: 0, y: 0, width: canvasRect.width * zoomScale, height: canvasRect.height * zoomScale)
             NSColor.black.setStroke()
             NSBezierPath(rect: border).stroke()
-
-            // Handles at the scaled corners/edges (visible when you scroll to edges)
-            let hs = handleSize * zoomScale
-            NSColor.systemBlue.setFill()
-            for p in [
-                NSPoint(x: border.minX - hs/2, y: border.minY - hs/2),               // bottom-left
-                NSPoint(x: border.midX - hs/2, y: border.minY - hs/2),               // bottom-center
-                NSPoint(x: border.maxX - hs/2, y: border.minY - hs/2),               // bottom-right
-                NSPoint(x: border.minX - hs/2, y: border.midY - hs/2),               // middle-left
-                NSPoint(x: border.maxX - hs/2, y: border.midY - hs/2),               // middle-right
-                NSPoint(x: border.minX - hs/2, y: border.maxY - hs/2),               // top-left
-                NSPoint(x: border.midX - hs/2, y: border.maxY - hs/2),               // top-center
-                NSPoint(x: border.maxX - hs/2, y: border.maxY - hs/2)                // top-right
-            ] {
-                NSBezierPath(rect: NSRect(x: p.x, y: p.y, width: hs, height: hs)).fill()
-            }
-
         } else {
             NSColor.black.setStroke()
             NSBezierPath(rect: canvasRect).stroke()
-
-            NSColor.systemBlue.setFill()
-            for position in handlePositions {
-                let r = NSRect(x: position.x, y: position.y, width: handleSize, height: handleSize)
-                NSBezierPath(rect: r).fill()
-            }
 
             if currentTool == .zoom, let r = zoomPreviewRect {
                 NSColor.keyboardFocusIndicatorColor.setStroke()
@@ -668,19 +647,15 @@ class CanvasView: NSView {
             }
         }
 
-        // === Canvas handle detection ===
-        for (i, pos) in handlePositions.enumerated() {
-            let handleRect = NSRect(x: pos.x, y: pos.y, width: handleSize, height: handleSize)
-            let hitRect = handleRect.insetBy(dx: -handleHitSlop, dy: -handleHitSlop)
-            if hitRect.contains(point) {
-                saveUndoState()
-                activeResizeHandle = ResizeHandle(rawValue: i)
-                isResizingCanvas = true
-                dragStartPoint = point
-                initialCanvasRect = canvasRect
-                //beginScrollFreezeIfNeeded()
-                return
-            }
+        // === Canvas border/corner detection ===
+        if let h = resizeHandle(at: point) {
+            saveUndoState()
+            activeResizeHandle = h
+            isResizingCanvas = true
+            dragStartPoint = point
+            initialCanvasRect = canvasRect
+            beginScrollFreezeIfNeeded()
+            return
         }
         
         // If we are in paste mode and the click is outside the active selection, commit the paste
@@ -698,17 +673,6 @@ class CanvasView: NSView {
                 // Do NOT return; allow this same click to proceed (e.g., start a new selection)
             }
         }
-        
-        /*
-        // === Selection outside click ===
-        if let image = selectedImage, let io = selectedImageOrigin {
-            let selectionFrame = NSRect(origin: io, size: image.size)
-            if !selectionFrame.contains(point) {
-                commitSelection()
-                return
-            }
-        }
-        */
 
         initializeCanvasIfNeeded()
 
@@ -734,32 +698,32 @@ class CanvasView: NSView {
                 selectedImage = nil
                 self.window?.makeFirstResponder(self)
             }
-            
+
         case .spray:
             currentSprayPoint = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
             startSpray()
-            
+
         case .text:
             startPoint = point
             isCreatingText = true
-            
+
         case .eyeDropper:
             if let picked = pickColour(at: point) {
                 currentColour = picked
                 NotificationCenter.default.post(name: .colourPicked, object: picked)
                 colourFromSelectionWindow = false
             }
-            
+
         case .pencil, .brush, .eraser:
             saveUndoState()  // <-- checkpoint at stroke start
             startPoint = point
             currentPath = NSBezierPath()
             currentPath?.move(to: point)
-            
+
         case .fill:
             saveUndoState()
             floodFill(from: point, with: currentColour)
-            
+
         case .curve:
             switch curvePhase {
             case 0:
@@ -769,13 +733,13 @@ class CanvasView: NSView {
             default:
                 break
             }
-            
+
         case .line, .rect, .roundRect, .ellipse:
             saveUndoState()  // <-- checkpoint at start of shape
             startPoint = point
             endPoint = point
             isDrawingShape = true
-            
+
         case .zoom:
             if isZoomed {
                 // Exit zoom
@@ -787,25 +751,25 @@ class CanvasView: NSView {
                 // Enter zoom using the current preview box if available
                 let p = convert(event.locationInWindow, from: nil)
                 let zr = zoomPreviewRect ?? NSRect(x: p.x - 64, y: p.y - 64, width: 128, height: 128)
-                
+
                 // Use the scrollview’s visible size as our viewport
                 let viewport = (enclosingScrollView?.contentView.bounds.size) ?? bounds.size
-                
+
                 // Uniform scale so zr * scale fits in viewport
                 let sx = max(1, viewport.width  / max(1, zr.width))
                 let sy = max(1, viewport.height / max(1, zr.height))
                 zoomScale = min(sx, sy)
-                
+
                 isZoomed = true
                 updateZoomDocumentSize()
-                
+
                 // Scroll so the zoomed preview rect is visible
                 let target = NSRect(x: zr.origin.x * zoomScale,
                                     y: zr.origin.y * zoomScale,
                                     width:  zr.size.width  * zoomScale,
                                     height: zr.size.height * zoomScale)
                 scrollToVisible(target)
-                
+
                 needsDisplay = true
             }
         }
@@ -1913,6 +1877,35 @@ class CanvasView: NSView {
         needsDisplay = true
     }
     
+    private func resizeHandle(at p: NSPoint) -> ResizeHandle? {
+        let r = canvasRect
+        let edge = edgeGrabThickness
+        let corner = cornerGrabSize
+
+        // Corner first (diagonal only when near the corner square)
+        let nearTopLeft     = abs(p.x - r.minX) <= corner && abs(p.y - r.maxY) <= corner
+        let nearTopRight    = abs(p.x - r.maxX) <= corner && abs(p.y - r.maxY) <= corner
+        let nearBottomLeft  = abs(p.x - r.minX) <= corner && abs(p.y - r.minY) <= corner
+        let nearBottomRight = abs(p.x - r.maxX) <= corner && abs(p.y - r.minY) <= corner
+        if nearTopLeft     { return .topLeft }
+        if nearTopRight    { return .topRight }
+        if nearBottomLeft  { return .bottomLeft }
+        if nearBottomRight { return .bottomRight }
+
+        // Otherwise any point along an edge is valid for 1-axis resize
+        let onLeft   = abs(p.x - r.minX) <= edge && p.y >= r.minY - edge && p.y <= r.maxY + edge
+        let onRight  = abs(p.x - r.maxX) <= edge && p.y >= r.minY - edge && p.y <= r.maxY + edge
+        let onTop    = abs(p.y - r.maxY) <= edge && p.x >= r.minX - edge && p.x <= r.maxX + edge
+        let onBottom = abs(p.y - r.minY) <= edge && p.x >= r.minX - edge && p.x <= r.maxX + edge
+
+        if onTop    { return .topCenter }
+        if onBottom { return .bottomCenter }
+        if onLeft   { return .middleLeft }
+        if onRight  { return .middleRight }
+
+        return nil
+    }
+    
     private func resizeBackingImage(to newSize: NSSize) {
         if canvasImage == nil {
             // Create a fresh white image of the requested size
@@ -1954,38 +1947,51 @@ class CanvasView: NSView {
     override func resetCursorRects() {
         super.resetCursorRects()
 
-        // Scale factor in Zoom Mode (1.0 otherwise)
+        // Canvas → view coords (scale when zoomed)
         let s: CGFloat = isZoomed ? zoomScale : 1.0
-
-        // Canvas handles (scale hit areas when zoomed)
-        for (i, position) in handlePositions.enumerated() {
-            let posV = isZoomed ? NSPoint(x: position.x * s, y: position.y * s) : position
-            var r = NSRect(x: posV.x, y: posV.y, width: handleSize * s, height: handleSize * s)
-            r = r.insetBy(dx: -handleHitSlop * s, dy: -handleHitSlop * s)
-            let clipped = r.intersection(bounds)
-            if !clipped.isEmpty {
-                addCursorRect(clipped, cursor: cursorForHandle(index: i))
-            }
+        func scale(_ r: NSRect) -> NSRect {
+            return isZoomed
+                ? NSRect(x: r.origin.x * s, y: r.origin.y * s, width: r.size.width * s, height: r.size.height * s)
+                : r
         }
 
-        // Selection handles (scale when zoomed)
-        if let selectionFrame = (selectedImage != nil
-            ? NSRect(origin: selectedImageOrigin ?? .zero, size: selectedImage!.size)
-            : selectionRect) {
+        let rV = scale(canvasRect)
+        let edge = edgeGrabThickness * s
+        let corner = cornerGrabSize * s
 
-            let selectionHandles = selectionHandlePositions(rect: selectionFrame)
-            for (i, r0) in selectionHandles.enumerated() {
-                let rV = isZoomed
-                    ? NSRect(x: r0.origin.x * s,
-                             y: r0.origin.y * s,
-                             width:  r0.size.width * s,
-                             height: r0.size.height * s)
-                    : r0
-                let clipped = rV.intersection(bounds)
-                if !clipped.isEmpty {
-                    addCursorRect(clipped, cursor: selectionCursorForHandle(index: i))
-                }
-            }
+        // Corner squares (give them priority)
+        let tl = NSRect(x: rV.minX - corner, y: rV.maxY - corner, width: 2*corner, height: 2*corner)
+        let tr = NSRect(x: rV.maxX - corner, y: rV.maxY - corner, width: 2*corner, height: 2*corner)
+        let bl = NSRect(x: rV.minX - corner, y: rV.minY - corner, width: 2*corner, height: 2*corner)
+        let br = NSRect(x: rV.maxX - corner, y: rV.minY - corner, width: 2*corner, height: 2*corner)
+
+        // Edge bands (trimmed to avoid overlap with corners)
+        let top    = NSRect(x: rV.minX + corner, y: rV.maxY - edge, width: rV.width - 2*corner, height: 2*edge)
+        let bottom = NSRect(x: rV.minX + corner, y: rV.minY - edge, width: rV.width - 2*corner, height: 2*edge)
+        let left   = NSRect(x: rV.minX - edge,   y: rV.minY + corner, width: 2*edge, height: rV.height - 2*corner)
+        let right  = NSRect(x: rV.maxX - edge,   y: rV.minY + corner, width: 2*edge, height: rV.height - 2*corner)
+
+        // Cursors
+        func diagNWSE() -> NSCursor {
+            return NSCursor(
+                image: NSImage(byReferencingFile: "/System/Library/Frameworks/WebKit.framework/Versions/Current/Frameworks/WebCore.framework/Resources/northWestSouthEastResizeCursor.png")!,
+                hotSpot: NSPoint(x: 8, y: 8))
+        }
+        func diagNESW() -> NSCursor {
+            return NSCursor(
+                image: NSImage(byReferencingFile: "/System/Library/Frameworks/WebKit.framework/Versions/Current/Frameworks/WebCore.framework/Resources/northEastSouthWestResizeCursor.png")!,
+                hotSpot: NSPoint(x: 8, y: 8))
+        }
+
+        // Add rects (clip to our bounds to avoid warnings)
+        for (rect, cursor) in [
+            (tl, diagNWSE()), (br, diagNWSE()),
+            (tr, diagNESW()), (bl, diagNESW()),
+            (top, .resizeUpDown), (bottom, .resizeUpDown),
+            (left, .resizeLeftRight), (right, .resizeLeftRight),
+        ] {
+            let clipped = rect.intersection(bounds)
+            if !clipped.isEmpty { addCursorRect(clipped, cursor: cursor) }
         }
     }
     
