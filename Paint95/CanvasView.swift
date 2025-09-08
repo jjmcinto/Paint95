@@ -146,7 +146,6 @@ class CanvasView: NSView {
     weak var delegate: CanvasViewDelegate?
     private var colourWindowController: ColourSelectionWindowController?
     
-    //var currentTool: PaintTool = .pencil
     var currentColour: NSColor {
         get { primaryColour }
         set { primaryColour = newValue }
@@ -262,8 +261,19 @@ class CanvasView: NSView {
 
     var currentTool: PaintTool = .pencil {
         didSet {
+            // Clear zoom preview whenever we leave Zoom
             if currentTool != .zoom {
-                zoomPreviewRect = nil   // clear preview when leaving Zoom
+                zoomPreviewRect = nil
+            }
+
+            // 🔁 Auto-commit any floating selection/paste when switching to a non-Select tool
+            if currentTool != .select,
+               let _ = selectedImage, let _ = selectedImageOrigin {
+                if isPastingActive {
+                    commitPastedImage()   // also clears paste flags
+                } else {
+                    commitSelection()     // draws selection into the canvas and clears selection state
+                }
             }
         }
     }
@@ -287,6 +297,10 @@ class CanvasView: NSView {
     // Scroll
     override var isOpaque: Bool { true }  // avoids transparent compositing
     override var wantsUpdateLayer: Bool { false }
+    private var savedElasticity: (v: NSScrollView.Elasticity, h: NSScrollView.Elasticity)?
+    private weak var freezeClip: NSClipView?
+    private var  freezeOrigin: NSPoint?
+    private var  isFreezeActive: Bool { freezeClip != nil }
     
     @objc dynamic var drawOpaque: Bool = true   // default ON like classic Paint
     
@@ -657,13 +671,14 @@ class CanvasView: NSView {
         // === Canvas handle detection ===
         for (i, pos) in handlePositions.enumerated() {
             let handleRect = NSRect(x: pos.x, y: pos.y, width: handleSize, height: handleSize)
-            let hitRect = handleRect.insetBy(dx: -handleHitSlop, dy: -handleHitSlop)  // <—
+            let hitRect = handleRect.insetBy(dx: -handleHitSlop, dy: -handleHitSlop)
             if hitRect.contains(point) {
                 saveUndoState()
                 activeResizeHandle = ResizeHandle(rawValue: i)
                 isResizingCanvas = true
                 dragStartPoint = point
                 initialCanvasRect = canvasRect
+                //beginScrollFreezeIfNeeded()
                 return
             }
         }
@@ -869,9 +884,7 @@ class CanvasView: NSView {
             needsDisplay = true
             return
         }
-
-
-        // === Canvas resize ===
+        
         // === Canvas resize ===
         if isResizingCanvas, let handle = activeResizeHandle {
             let dx = point.x - dragStartPoint.x
@@ -907,14 +920,26 @@ class CanvasView: NSView {
                 newRect.size.height += dy
             }
 
-            if newRect.width  < 50 { newRect.size.width  = 50 }
-            if newRect.height < 50 { newRect.size.height = 50 }
+            // Enforce min size while keeping the *opposite* edge anchored:
+            if newRect.width < 50 {
+                switch handle {
+                case .bottomLeft, .middleLeft, .topLeft:
+                    newRect.origin.x = initialCanvasRect.maxX - 50
+                default: break
+                }
+                newRect.size.width = 50
+            }
+            if newRect.height < 50 {
+                switch handle {
+                case .bottomLeft, .bottomCenter, .bottomRight:
+                    newRect.origin.y = initialCanvasRect.maxY - 50
+                default: break
+                }
+                newRect.size.height = 50
+            }
 
-            // ⬇️ Inform the scroll view live: resize the documentView (this view)
+            // 🔴 Preview only: update the model rect and redraw. Do NOT touch the view frame here.
             canvasRect = newRect
-            setFrameSize(newRect.size)
-            invalidateIntrinsicContentSize()
-            window?.invalidateCursorRects(for: self)
             needsDisplay = true
             return
         }
@@ -1011,46 +1036,28 @@ class CanvasView: NSView {
             cropCanvasImageToCanvasRect(using: handleUsed)   // commits pixels, re-calibrates to (0,0)
             activeResizeHandle = nil
 
+            //endScrollFreeze()
+            
             // Defer to next runloop so NSScrollView finishes its own adjustments first
             if let sv = enclosingScrollView {
                 DispatchQueue.main.async { [weak self, weak sv] in
                     guard let self = self, let sv = sv else { return }
                     let clip = sv.contentView
 
-                    if needZeroX || needZeroY {
-                        // For negative drags, pin scrollers to zero on the affected axes.
-                        var o = clip.bounds.origin
-                        if needZeroX { o.x = 0 }
-                        if needZeroY { o.y = 0 }
-                        clip.setBoundsOrigin(o)
-                        sv.reflectScrolledClipView(clip)
-
-                        // Ensure (0,0) is in view.
-                        self.scrollToVisible(NSRect(x: 0, y: 0, width: 1, height: 1))
-                    } else if let h = handleUsed {
-                        // For positive-only drags (e.g., top/right), keep the dragged corner visible.
+                    if let h = handleUsed {
                         let w = self.canvasRect.width
                         let hgt = self.canvasRect.height
                         let anchorRect: NSRect
                         switch h {
-                        case .topRight:
-                            anchorRect = NSRect(x: w - 1, y: hgt - 1, width: 1, height: 1)
-                        case .topCenter:
-                            anchorRect = NSRect(x: w / 2,  y: hgt - 1, width: 1, height: 1)
-                        case .middleRight:
-                            anchorRect = NSRect(x: w - 1,  y: hgt / 2, width: 1, height: 1)
-                        case .topLeft:
-                            anchorRect = NSRect(x: 1,      y: hgt - 1, width: 1, height: 1)
-                        case .bottomRight:
-                            anchorRect = NSRect(x: w - 1,  y: 1,       width: 1, height: 1)
-                        case .bottomCenter:
-                            anchorRect = NSRect(x: w / 2,  y: 1,       width: 1, height: 1)
-                        case .middleLeft:
-                            anchorRect = NSRect(x: 1,      y: hgt / 2, width: 1, height: 1)
-                        case .bottomLeft:
-                            anchorRect = NSRect(x: 0,      y: 0,       width: 1, height: 1)
+                        case .topRight:     anchorRect = NSRect(x: w - 1, y: hgt - 1, width: 1, height: 1)
+                        case .topCenter:    anchorRect = NSRect(x: w / 2,  y: hgt - 1, width: 1, height: 1)
+                        case .middleRight:  anchorRect = NSRect(x: w - 1,  y: hgt / 2, width: 1, height: 1)
+                        case .topLeft:      anchorRect = NSRect(x: 1,      y: hgt - 1, width: 1, height: 1)
+                        case .bottomRight:  anchorRect = NSRect(x: w - 1,  y: 1,       width: 1, height: 1)
+                        case .bottomCenter: anchorRect = NSRect(x: w / 2,  y: 1,       width: 1, height: 1)
+                        case .middleLeft:   anchorRect = NSRect(x: 1,      y: hgt / 2, width: 1, height: 1)
+                        case .bottomLeft:   anchorRect = NSRect(x: 0,      y: 0,       width: 1, height: 1)
                         }
-
                         self.scrollToVisible(anchorRect)
                     }
                 }
@@ -2346,6 +2353,59 @@ class CanvasView: NSView {
         selectedImage = image
         selectedImageOrigin = rect.origin
         clearedOriginalAreaForCurrentSelection = false
+    }
+
+    private func beginScrollFreezeIfNeeded() {
+        guard freezeClip == nil, let sv = enclosingScrollView else { return }
+        let clip = sv.contentView
+        freezeClip = clip
+        freezeOrigin = clip.bounds.origin
+
+        // Turn off rubber-banding while resizing so AppKit can't "helpfully" move us.
+        savedElasticity = (sv.verticalScrollElasticity, sv.horizontalScrollElasticity)
+        sv.verticalScrollElasticity   = .none
+        sv.horizontalScrollElasticity = .none
+    }
+
+    private func maintainScrollFreeze() {
+        guard let clip = freezeClip, let o = freezeOrigin else { return }
+
+        // Clamp the stored origin to the current document extents.
+        let doc = clip.documentRect
+        let bw  = clip.bounds.size.width
+        let bh  = clip.bounds.size.height
+
+        // max() guards the case where document is smaller than the visible size.
+        let maxX = max(0, doc.width  - bw)
+        let maxY = max(0, doc.height - bh)
+
+        var pinned = NSPoint(x: min(max(0, o.x), maxX),
+                             y: min(max(0, o.y), maxY))
+
+        // Only adjust if AppKit moved us.
+        if pinned != clip.bounds.origin {
+            NSAnimationContext.beginGrouping()
+            NSAnimationContext.current.duration = 0
+            clip.scroll(to: pinned)
+            (clip.superview as? NSScrollView)?.reflectScrolledClipView(clip)
+            NSAnimationContext.endGrouping()
+        }
+    }
+
+    private func endScrollFreeze() {
+        if let sv = enclosingScrollView, let e = savedElasticity {
+            sv.verticalScrollElasticity   = e.v
+            sv.horizontalScrollElasticity = e.h
+        }
+        savedElasticity = nil
+        freezeClip = nil
+        freezeOrigin = nil
+    }
+    
+    override func viewWillDraw() {
+        super.viewWillDraw()
+        // If AppKit adjusted after layout, pin it back before paint.
+        //if isResizingCanvas { maintainScrollFreeze() }
     }
     
     func pointsAreEqual(_ p1: NSPoint, _ p2: NSPoint) -> Bool {

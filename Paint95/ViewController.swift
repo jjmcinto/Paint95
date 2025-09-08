@@ -7,6 +7,24 @@ extension Notification.Name {
     static let paletteLoaded = Notification.Name("Paint95PaletteLoaded")
 }
 
+final class FreezableClipView: NSClipView {
+    var isFrozen = false
+    var frozenOrigin: NSPoint = .zero
+
+    override func scroll(to newOrigin: NSPoint) {
+        super.scroll(to: isFrozen ? frozenOrigin : newOrigin)
+    }
+
+    override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+        var r = super.constrainBoundsRect(proposedBounds)
+        if isFrozen {
+            // Keep the origin pinned while allowing size constraints.
+            r.origin = frozenOrigin
+        }
+        return r
+    }
+}
+
 extension ViewController {
 
     // MARK: Options ▸ Colours…
