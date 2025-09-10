@@ -2455,13 +2455,15 @@ class CanvasView: NSView {
 
     func floodFill(from point: NSPoint, with fillColour: NSColor) {
         saveUndoState()
-        let width = Int(canvasRect.width)
-        let height = Int(canvasRect.height)
-        
+        initializeCanvasIfNeeded()
+        guard let base = canvasImage else { return }
+        let imgSize = base.size
+        let w = Int(imgSize.width), h = Int(imgSize.height)
+
         guard let rep = NSBitmapImageRep(
             bitmapDataPlanes: nil,
-            pixelsWide: width,
-            pixelsHigh: height,
+            pixelsWide: w,
+            pixelsHigh: h,
             bitsPerSample: 8,
             samplesPerPixel: 4,
             hasAlpha: true,
@@ -2471,90 +2473,79 @@ class CanvasView: NSView {
             bitsPerPixel: 0
         ) else { return }
 
-        let context = NSGraphicsContext(bitmapImageRep: rep)
+        // Rasterize current canvas into the bitmap in IMAGE SPACE (origin 0,0)
         NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = context
+        if let ctx = NSGraphicsContext(bitmapImageRep: rep) {
+            NSGraphicsContext.current = ctx
+            NSGraphicsContext.current?.imageInterpolation = .none
 
-        NSColor.white.setFill()
-        canvasRect.fill()
-        canvasImage?.draw(in: canvasRect)
-        for (path, colour) in drawnPaths {
-            colour.setStroke()
-            path.stroke()
+            NSColor.white.setFill()
+            NSBezierPath(rect: NSRect(origin: .zero, size: imgSize)).fill()
+
+            base.draw(in: NSRect(origin: .zero, size: imgSize),
+                      from: NSRect(origin: .zero, size: imgSize),
+                      operation: .copy,
+                      fraction: 1.0,
+                      respectFlipped: true,
+                      hints: [.interpolation: NSImageInterpolation.none])
+
+            // Do NOT re-stroke drawnPaths here—those pixels are already in `base`.
+            ctx.flushGraphics()
         }
-
-        context?.flushGraphics()
         NSGraphicsContext.restoreGraphicsState()
 
         guard let data = rep.bitmapData else { return }
 
-        let x = Int(point.x)
-        let y = Int(canvasRect.height - point.y)
-        guard x >= 0, x < width, y >= 0, y < height else { return }
+        // Seed point in image space (convert from canvas/view space)
+        let ip = imgPoint(point) // subtracts canvasRect.origin
+        let sx = Int(floor(ip.x))
+        let sy = Int(floor(imgSize.height - ip.y)) // flip Y for bitmap row order
+        guard sx >= 0, sx < w, sy >= 0, sy < h else { return }
 
-        let offset = (y * rep.bytesPerRow) + (x * rep.samplesPerPixel)
-        let startPixel = data + offset
-        let targetR = startPixel[0]
-        let targetG = startPixel[1]
-        let targetB = startPixel[2]
-        let targetA = startPixel[3]
+        let spp = rep.samplesPerPixel   // 4 (RGBA)
+        let bpr = rep.bytesPerRow
+
+        let start = data + (sy * bpr) + (sx * spp)
+        let targetR = start[0], targetG = start[1], targetB = start[2], targetA = start[3]
 
         var rF: CGFloat = 0, gF: CGFloat = 0, bF: CGFloat = 0, aF: CGFloat = 0
-        fillColour.usingColorSpace(.deviceRGB)?.getRed(&rF, green: &gF, blue: &bF, alpha: &aF)
-        let newR = UInt8(rF * 255)
-        let newG = UInt8(gF * 255)
-        let newB = UInt8(bF * 255)
-        let newA = UInt8(aF * 255)
+        (fillColour.usingColorSpace(.deviceRGB) ?? fillColour).getRed(&rF, green: &gF, blue: &bF, alpha: &aF)
+        let newR = UInt8(rF * 255), newG = UInt8(gF * 255), newB = UInt8(bF * 255), newA = UInt8(aF * 255)
 
-        if targetR == newR && targetG == newG && targetB == newB && targetA == newA {
-            return
-        }
+        // No-op if target already equals fill colour
+        if targetR == newR && targetG == newG && targetB == newB && targetA == newA { return }
 
-        var queue = [(x, y)]
+        // Flood fill (stack/queue)
+        var stack = [(sx, sy)]
         let maxPixels = 1_000_000
         var filled = 0
 
-        while !queue.isEmpty {
-            let (cx, cy) = queue.removeLast()
-            if cx < 0 || cy < 0 || cx >= width || cy >= height {
-                continue
-            }
+        while let (cx, cy) = stack.popLast() {
+            if cx < 0 || cy < 0 || cx >= w || cy >= h { continue }
+            let off = (cy * bpr) + (cx * spp)
+            let p = data + off
+            if p[0] != targetR || p[1] != targetG || p[2] != targetB || p[3] != targetA { continue }
 
-            let offset = (cy * rep.bytesPerRow) + (cx * rep.samplesPerPixel)
-            let pixel = data + offset
+            p[0] = newR; p[1] = newG; p[2] = newB; p[3] = newA
 
-            if pixel[0] != targetR || pixel[1] != targetG || pixel[2] != targetB || pixel[3] != targetA {
-                continue
-            }
-
-            pixel[0] = newR
-            pixel[1] = newG
-            pixel[2] = newB
-            pixel[3] = newA
-
-            queue.append((cx + 1, cy))
-            queue.append((cx - 1, cy))
-            queue.append((cx, cy + 1))
-            queue.append((cx, cy - 1))
+            stack.append((cx + 1, cy))
+            stack.append((cx - 1, cy))
+            stack.append((cx, cy + 1))
+            stack.append((cx, cy - 1))
 
             filled += 1
-            if filled > maxPixels {
-                break
-            }
+            if filled > maxPixels { break }
         }
 
-        if canvasImage == nil {
-            canvasImage = NSImage(size: canvasRect.size)
-            canvasImage?.lockFocus()
-            NSColor.white.setFill()
-            canvasRect.fill()
-            canvasImage?.unlockFocus()
-        }
+        // Replace the backing raster (no offsets, no scaling)
+        let newImage = NSImage(size: imgSize)
+        newImage.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .none
+        rep.draw(in: NSRect(origin: .zero, size: imgSize))
+        newImage.unlockFocus()
 
-        canvasImage?.lockFocus()
-        rep.draw(in: canvasRect)
-        canvasImage?.unlockFocus()
-
+        // Swap in the new pixels; no need to reset vectors here
+        commitRasterChange(newImage, resetVectors: false)
         needsDisplay = true
     }
     
