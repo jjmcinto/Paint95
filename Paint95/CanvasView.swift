@@ -5,6 +5,54 @@ protocol CanvasViewDelegate: AnyObject {
     func canvasStatusDidChange(cursor: NSPoint, selectionSize: NSSize?)
 }
 
+// Add once somewhere in the file (e.g., near other helpers)
+private extension NSRect {
+    var isFiniteRect: Bool {
+        return origin.x.isFinite && origin.y.isFinite && size.width.isFinite && size.height.isFinite
+    }
+}
+extension NSCursor {
+    /// ↘︎↖︎ (NW–SE)
+    static let resizeDiagonalNWSE: NSCursor = {
+        if let img = NSImage(systemSymbolName: "arrow.up.left.and.arrow.down.right", accessibilityDescription: nil) {
+            img.size = NSSize(width: 18, height: 18)
+            return NSCursor(image: img, hotSpot: NSPoint(x: 9, y: 9))
+        }
+        // Fallback: simple drawn diagonal
+        let size = NSSize(width: 16, height: 16)
+        let img = NSImage(size: size)
+        img.lockFocus()
+        NSColor.labelColor.setStroke()
+        let p = NSBezierPath()
+        p.lineWidth = 2
+        p.move(to: NSPoint(x: 2,  y: 14))
+        p.line(to: NSPoint(x: 14, y: 2))
+        p.stroke()
+        img.unlockFocus()
+        return NSCursor(image: img, hotSpot: NSPoint(x: 8, y: 8))
+    }()
+
+    /// ↗︎↙︎ (NE–SW)
+    static let resizeDiagonalNESW: NSCursor = {
+        if let img = NSImage(systemSymbolName: "arrow.up.right.and.arrow.down.left", accessibilityDescription: nil) {
+            img.size = NSSize(width: 18, height: 18)
+            return NSCursor(image: img, hotSpot: NSPoint(x: 9, y: 9))
+        }
+        // Fallback: simple drawn diagonal
+        let size = NSSize(width: 16, height: 16)
+        let img = NSImage(size: size)
+        img.lockFocus()
+        NSColor.labelColor.setStroke()
+        let p = NSBezierPath()
+        p.lineWidth = 2
+        p.move(to: NSPoint(x: 2,  y: 2))
+        p.line(to: NSPoint(x: 14, y: 14))
+        p.stroke()
+        img.unlockFocus()
+        return NSCursor(image: img, hotSpot: NSPoint(x: 8, y: 8))
+    }()
+}
+
 // MARK: - Export snapshot (flattens any floating selection)
 extension CanvasView {
     /// Returns a flattened image of the visible canvas, including any floating selection.
@@ -173,6 +221,8 @@ class CanvasView: NSView {
     var curveEnd: NSPoint = .zero
     var control1: NSPoint = .zero
     var control2: NSPoint = .zero
+    var control1Set = false
+    var control2Set = false
     
     //For Text Tool
     var isCreatingText = false
@@ -208,6 +258,10 @@ class CanvasView: NSView {
         case middleLeft, middleRight
         case topLeft, topCenter, topRight
     }
+    private let scrollGutter: CGFloat = 20 // How much extra scrollable space you want around the canvas
+    private let edgeHitOutside: CGFloat = 8 // How far *outside* the canvas edge we still accept a resize click
+    private let edgeHitInside:  CGFloat = 2 // How far *inside* the canvas edge we still accept a resize click (small, so you can still draw at edges)
+    private let cornerHit: CGFloat = 12 // Approx square size for corner hot-zones (diagonal resize). Corners win over edges.
     let handleSize: CGFloat = 5
     private let handleHitSlop: CGFloat = 6   // extra clickable area around each canvas handle
     var activeResizeHandle: ResizeHandle? = nil
@@ -231,6 +285,7 @@ class CanvasView: NSView {
             NSPoint(x: canvasRect.maxX - offset, y: canvasRect.maxY - offset)               // top-right
         ]
     }
+    private let borderHitWidth: CGFloat = 6
     
     //selection re-size
     enum SelectionHandle: Int {
@@ -250,10 +305,12 @@ class CanvasView: NSView {
     var zoomScale: CGFloat = 1.0
     var mousePosition: NSPoint = .zero
     override var intrinsicContentSize: NSSize {
-        return isZoomed
-            ? NSSize(width: canvasRect.width * zoomScale,
-                     height: canvasRect.height * zoomScale)
-            : canvasRect.size
+        let s = isZoomed ? zoomScale : 1.0
+        let pad = resizeGutter * s * 2
+        return NSSize(
+            width:  canvasRect.width  * s + pad,
+            height: canvasRect.height * s + pad
+        )
     }
     
     // MARK: Zoom preview
@@ -276,6 +333,15 @@ class CanvasView: NSView {
                 } else {
                     commitSelection()     // draws selection into the canvas and clears selection state
                 }
+            }
+            
+            if currentTool == .curve {
+                curvePhase = 0
+                curveStart = .zero
+                curveEnd   = .zero
+                control1   = .zero
+                control2   = .zero
+                cancelCurvePreview = false
             }
         }
     }
@@ -300,9 +366,13 @@ class CanvasView: NSView {
     override var isOpaque: Bool { true }  // avoids transparent compositing
     override var wantsUpdateLayer: Bool { false }
     private var savedElasticity: (v: NSScrollView.Elasticity, h: NSScrollView.Elasticity)?
-    private weak var freezeClip: NSClipView?
-    private var  freezeOrigin: NSPoint?
-    private var  isFreezeActive: Bool { freezeClip != nil }
+    private var freezeClip: NSClipView?
+    private var freezeOrigin: NSPoint?
+    private var savedPostsBounds: Bool?
+    private var isFreezeActive: Bool { freezeClip != nil }
+    private var isMaintainingScrollFreeze = false
+    private var scrollFreezeObserver: NSObjectProtocol?
+    private let resizeGutter: CGFloat = 8.0
     
     @objc dynamic var drawOpaque: Bool = true   // default ON like classic Paint
     
@@ -351,6 +421,7 @@ class CanvasView: NSView {
                                           owner: self,
                                           userInfo: nil)
         self.addTrackingArea(trackingArea)
+        applyScrollGutters()
     }
 
     @objc func colourPicked(_ notification: Notification) {
@@ -416,15 +487,14 @@ class CanvasView: NSView {
     }
     
     func clearCanvasRegion(rect: NSRect, lockFocus: Bool = true) {
+        let rImg = imgRect(rect)
         if lockFocus { canvasImage?.lockFocus() }
         NSColor.white.setFill()
-        rect.fill()
+        rImg.fill()
         if lockFocus { canvasImage?.unlockFocus() }
-        
-        // Remove intersecting paths
-        drawnPaths.removeAll { (path, _) in
-            return path.bounds.intersects(rect)
-        }
+
+        // Paths are stored in image-space already
+        drawnPaths.removeAll { $0.path.bounds.intersects(rImg) }
     }
     
     override var canBecomeKeyView: Bool {
@@ -442,32 +512,44 @@ class CanvasView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
+        // One rect to rule them all: where the canvas lives in *view* space.
+        let canvasViewRect: NSRect = isZoomed ? toZoomed(canvasRect) : canvasRect
+
         // === Canvas image drawing ===
         if isResizingCanvas {
-            let originalRect = NSRect(origin: .zero, size: canvasImage?.size ?? .zero)
-            canvasImage?.draw(in: originalRect)
+            if let image = canvasImage {
+                image.draw(in: canvasViewRect,
+                           from: NSRect(origin: .zero, size: canvasRect.size),
+                           operation: .copy,
+                           fraction: 1.0,
+                           respectFlipped: true,
+                           hints: [.interpolation: NSImageInterpolation.none])
+            }
 
+            // Dashed live-preview of the canvas bounds (same rect)
             NSColor.red.setStroke()
             let dashPattern: [CGFloat] = [5.0, 3.0]
-            let path = NSBezierPath(rect: canvasRect)
+            let path = NSBezierPath(rect: canvasViewRect)
             path.setLineDash(dashPattern, count: dashPattern.count, phase: 0)
             path.stroke()
 
         } else if isZoomed {
             guard let image = canvasImage else { return }
 
-            // Draw the WHOLE canvas scaled. Scrolling now pans naturally.
-            let dest = NSRect(x: 0, y: 0,
-                              width:  canvasRect.width  * zoomScale,
-                              height: canvasRect.height * zoomScale)
-            image.draw(in: dest,
+            // Draw the WHOLE canvas scaled at the same rect we’ll use for the border.
+            image.draw(in: canvasViewRect,
                        from: NSRect(origin: .zero, size: canvasRect.size),
                        operation: .copy,
                        fraction: 1.0,
                        respectFlipped: true,
                        hints: [.interpolation: NSImageInterpolation.none])
 
+            // Single border—same rect, no duplicate 0,0 border anymore.
+            NSColor.black.setStroke()
+            NSBezierPath(rect: canvasViewRect).stroke()
+
         } else {
+            // Not zoomed
             canvasImage?.draw(in: canvasRect)
 
             // Zoom preview box when not zoomed yet
@@ -487,9 +569,8 @@ class CanvasView: NSView {
                                                height: image.size.height * zoomScale))
 
                 NSGraphicsContext.saveGraphicsState()
-                NSBezierPath(rect: NSRect(x: 0, y: 0,
-                                          width:  canvasRect.width  * zoomScale,
-                                          height: canvasRect.height * zoomScale)).addClip()
+                // Clip to the visible canvas in *view* space
+                NSBezierPath(rect: canvasViewRect).addClip()
                 image.draw(in: dest, from: .zero, operation: .sourceOver, fraction: 1.0)
                 NSGraphicsContext.restoreGraphicsState()
 
@@ -568,21 +649,38 @@ class CanvasView: NSView {
 
         // === Curve / shapes / text previews ===
         if currentTool == .curve && !cancelCurvePreview {
-            var start = startPoint, end = endPoint, c1 = control1, c2 = control2
-            if isZoomed { start = toZoomed(start); end = toZoomed(end); c1 = toZoomed(c1); c2 = toZoomed(c2) }
+            var s = curveStart, e = curveEnd, c1 = control1, c2 = control2
+            if isZoomed { s = toZoomed(s); e = toZoomed(e); c1 = toZoomed(c1); c2 = toZoomed(c2) }
+
+            // Effective controls based on phase
+            // - phase 0: show a straight line
+            // - phase 1: use c1 for both handles (quadratic-like). If c1==s, it stays straight.
+            // - phase 2: use c1 and c2; if user hasn’t moved c2 yet, treat c2 as `e` so only c1 bends.
+            let c1Eff = (curvePhase >= 1) ? c1 : s
+            let c2Eff = (curvePhase == 2) ? c2
+                       : (curvePhase == 1 ? c1 : e)
 
             let path = NSBezierPath()
             path.lineWidth = toolSize * (isZoomed ? zoomScale : 1)
             currentColour.set()
+            
             switch curvePhase {
-            case 0: if start != end { path.move(to: start); path.line(to: end); path.stroke() }
-            case 1: path.move(to: start); path.curve(to: end, controlPoint1: c1, controlPoint2: c1); path.stroke()
-            case 2: path.move(to: start); path.curve(to: end, controlPoint1: c1, controlPoint2: c2); path.stroke()
-            default: break
+            case 0:
+                if s != e { path.move(to: s); path.line(to: e); path.stroke() }
+            case 1:
+                path.move(to: s)
+                path.curve(to: e, controlPoint1: c1Eff, controlPoint2: c1Eff)
+                path.stroke()
+            case 2:
+                path.move(to: s)
+                path.curve(to: e, controlPoint1: c1Eff, controlPoint2: c2Eff)
+                path.stroke()
+            default:
+                break
             }
             cancelCurvePreview = false
-
-        } else if isDrawingShape {
+        }
+ else if isDrawingShape {
             currentColour.set()
             var start = startPoint, end = endPoint
             if isZoomed { start = toZoomed(start); end = toZoomed(end) }
@@ -600,12 +698,8 @@ class CanvasView: NSView {
             path.stroke()
         }
 
-        // === Canvas border (no handles) ===
-        if isZoomed {
-            let border = NSRect(x: 0, y: 0, width: canvasRect.width * zoomScale, height: canvasRect.height * zoomScale)
-            NSColor.black.setStroke()
-            NSBezierPath(rect: border).stroke()
-        } else {
+        // === Canvas border when NOT zoomed ===
+        if !isZoomed {
             NSColor.black.setStroke()
             NSBezierPath(rect: canvasRect).stroke()
 
@@ -617,6 +711,7 @@ class CanvasView: NSView {
             }
         }
     }
+
     
     override func mouseDown(with event: NSEvent) {
         zoomPreviewRect = nil
@@ -629,14 +724,16 @@ class CanvasView: NSView {
                 textView = nil
             }
         }
-        let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
+        
+        let viewPt = convert(event.locationInWindow, from: nil)
+        let point = convertZoomedPointToCanvas(viewPt)
         emitStatusUpdate(cursor: point)
-
-        // === Selection handle detection (resize) ===
+        
+        // Selection resize handles
         if let rect = selectionRect ?? (selectedImage != nil ? NSRect(origin: selectedImageOrigin ?? .zero, size: selectedImage!.size) : nil) {
             for (i, handle) in selectionHandlePositions(rect: rect).enumerated() {
                 if handle.contains(point) {
-                    saveUndoState()  // <-- checkpoint before selection resize
+                    saveUndoState()
                     activeSelectionHandle = SelectionHandle(rawValue: i)
                     isResizingSelection = true
                     resizeStartPoint = point
@@ -647,8 +744,11 @@ class CanvasView: NSView {
             }
         }
 
-        // === Canvas border/corner detection ===
-        if let h = resizeHandle(at: point) {
+        // Points in both spaces
+        let canvasPt = convertZoomedPointToCanvas(viewPt)
+        
+        // === Canvas border/corner detection (zoom- & gutter-safe) ===
+        if let h = resizeHandle(at: point, generous: true) {
             saveUndoState()
             activeResizeHandle = h
             isResizingCanvas = true
@@ -657,20 +757,18 @@ class CanvasView: NSView {
             beginScrollFreezeIfNeeded()
             return
         }
-        
-        // If we are in paste mode and the click is outside the active selection, commit the paste
+
+        // Commit paste if clicking outside it (unchanged)
         if isPastingImage,
            let img = selectedImage, let io = selectedImageOrigin {
             let activeRect = NSRect(origin: io, size: img.size)
             if !activeRect.contains(point) {
-                // Reuse the selection commit to draw the overlay into the canvas
                 commitSelection()
-                // Clear paste-mode flags
                 isPastingImage = false
                 isPastingActive = false
                 pastedImage = nil
                 pastedImageOrigin = nil
-                // Do NOT return; allow this same click to proceed (e.g., start a new selection)
+                // fall through
             }
         }
 
@@ -681,13 +779,12 @@ class CanvasView: NSView {
             if let image = selectedImage, let io = selectedImageOrigin {
                 let rect = NSRect(origin: io, size: image.size)
                 if rect.contains(point) {
-                    saveUndoState()  // <-- checkpoint before selection move
+                    saveUndoState()
                     isDraggingSelection = true
                     selectionDragStartPoint = point
                     selectionImageStartOrigin = selectedImageOrigin
-                    if !isPastingImage { // do NOT clear during uncommitted paste move
+                    if !isPastingImage {
                         clearCanvasRegion(rect: rect)
-                        // Mark as cleared-once for this floating selection
                         clearedOriginalAreaForCurrentSelection = true
                         hasMovedSelection = true
                     }
@@ -696,60 +793,78 @@ class CanvasView: NSView {
                 startPoint = point
                 selectionRect = nil
                 selectedImage = nil
-                self.window?.makeFirstResponder(self)
+                window?.makeFirstResponder(self)
             }
-
+            
         case .spray:
-            currentSprayPoint = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
+            currentSprayPoint = convertZoomedPointToCanvas(viewPt)
             startSpray()
-
+            
         case .text:
             startPoint = point
             isCreatingText = true
-
+            
         case .eyeDropper:
             if let picked = pickColour(at: point) {
                 currentColour = picked
                 NotificationCenter.default.post(name: .colourPicked, object: picked)
                 colourFromSelectionWindow = false
             }
-
+            
         case .pencil, .brush, .eraser:
-            saveUndoState()  // <-- checkpoint at stroke start
+            saveUndoState()
             startPoint = point
             currentPath = NSBezierPath()
             currentPath?.move(to: point)
-
+            
         case .fill:
             saveUndoState()
             floodFill(from: point, with: currentColour)
-
+            
         case .curve:
-            switch curvePhase {
-            case 0:
-                saveUndoState()  // <-- checkpoint at start of curve
+            if curvePhase == 0 {
+                saveUndoState()
                 curveStart = point
-                curveEnd = point
-            default:
-                break
-            }
+                curveEnd   = point
+                startPoint = point
+                endPoint   = point
 
+                // Controls start at the endpoints → no bend until user moves them
+                control1   = point   // equals start
+                control2   = point   // will mirror in phase 1, or become end in phase 2
+            }
+            
         case .line, .rect, .roundRect, .ellipse:
-            saveUndoState()  // <-- checkpoint at start of shape
+            saveUndoState()
             startPoint = point
             endPoint = point
             isDrawingShape = true
-
+            
         case .zoom:
+            // If this click is on/near a border or corner, treat it as a resize instead of toggling zoom.
+            if let h = resizeHandle(at: point, generous: true) {
+                saveUndoState()
+                activeResizeHandle = h
+                isResizingCanvas = true
+                dragStartPoint = point
+                initialCanvasRect = canvasRect
+                beginScrollFreezeIfNeeded()
+                return
+            }
+
             if isZoomed {
-                // Exit zoom
+                // === Exit zoom (be defensive about scroll/clip state) ===
                 isZoomed = false
                 zoomScale = 1.0
-                updateZoomDocumentSize()
+                zoomPreviewRect = nil
+
+                updateZoomDocumentSize()        // resets documentView size back to canvasRect.size
+                constrainClipViewBoundsNow()    // clamp any weird clip origins AppKit might hold
                 needsDisplay = true
+
             } else {
-                // Enter zoom using the current preview box if available
-                let p = convert(event.locationInWindow, from: nil)
+                // === Enter zoom ===
+                let p  = convert(event.locationInWindow, from: nil)
                 let zr = zoomPreviewRect ?? NSRect(x: p.x - 64, y: p.y - 64, width: 128, height: 128)
 
                 // Use the scrollview’s visible size as our viewport
@@ -758,80 +873,62 @@ class CanvasView: NSView {
                 // Uniform scale so zr * scale fits in viewport
                 let sx = max(1, viewport.width  / max(1, zr.width))
                 let sy = max(1, viewport.height / max(1, zr.height))
-                zoomScale = min(sx, sy)
+                let z  = min(sx, sy)
 
-                isZoomed = true
+                zoomScale = (z.isFinite && z > 0) ? z : 1.0
+                isZoomed  = true
                 updateZoomDocumentSize()
 
-                // Scroll so the zoomed preview rect is visible
-                let target = NSRect(x: zr.origin.x * zoomScale,
-                                    y: zr.origin.y * zoomScale,
-                                    width:  zr.size.width  * zoomScale,
-                                    height: zr.size.height * zoomScale)
-                scrollToVisible(target)
+                // Scroll so the zoomed preview rect is visible (safe)
+                let zsafe  = zoomScale
+                let target = NSRect(x: zr.origin.x * zsafe,
+                                    y: zr.origin.y * zsafe,
+                                    width:  zr.size.width  * zsafe,
+                                    height: zr.size.height * zsafe)
+                scrollToVisibleSafe(target)
 
                 needsDisplay = true
             }
+
         }
+
         window?.invalidateCursorRects(for: self)
     }
 
     override func mouseDragged(with event: NSEvent) {
-        let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
+        let viewPt = convert(event.locationInWindow, from: nil)
+        let point  = convertZoomedPointToCanvas(viewPt)
         let shiftPressed = event.modifierFlags.contains(.shift)
         emitStatusUpdate(cursor: point)
-        
-        // === Selection resizing (reuse for pasted content; non-destructive while pasting) ===
+
+        // Selection resizing (unchanged)
         if isResizingSelection, let handle = activeSelectionHandle {
+            var newRect = originalSelectionRect
             let dx = point.x - resizeStartPoint.x
             let dy = point.y - resizeStartPoint.y
-            var newRect = originalSelectionRect
-
             switch handle {
-            case .topLeft:
-                newRect.origin.x += dx
-                newRect.size.width -= dx
-                newRect.size.height += dy
-            case .topCenter:
-                newRect.size.height += dy
-            case .topRight:
-                newRect.size.width += dx
-                newRect.size.height += dy
-            case .middleLeft:
-                newRect.origin.x += dx
-                newRect.size.width -= dx
-            case .middleRight:
-                newRect.size.width += dx
-            case .bottomLeft:
-                newRect.origin.x += dx
-                newRect.size.width -= dx
-                newRect.origin.y += dy
-                newRect.size.height -= dy
-            case .bottomCenter:
-                newRect.origin.y += dy
-                newRect.size.height -= dy
-            case .bottomRight:
-                newRect.size.width += dx
-                newRect.origin.y += dy
-                newRect.size.height -= dy
+            case .topLeft:     newRect.origin.x += dx; newRect.size.width -= dx; newRect.size.height += dy
+            case .topCenter:   newRect.size.height += dy
+            case .topRight:    newRect.size.width += dx; newRect.size.height += dy
+            case .middleLeft:  newRect.origin.x += dx; newRect.size.width -= dx
+            case .middleRight: newRect.size.width += dx
+            case .bottomLeft:  newRect.origin.x += dx; newRect.size.width -= dx; newRect.origin.y += dy; newRect.size.height -= dy
+            case .bottomCenter:newRect.origin.y += dy; newRect.size.height -= dy
+            case .bottomRight: newRect.size.width += dx; newRect.origin.y += dy; newRect.size.height -= dy
             }
-
             if shiftPressed {
                 let aspect = originalSelectionRect.width / max(originalSelectionRect.height, 1)
-                if handle == .topLeft || handle == .topRight || handle == .bottomLeft || handle == .bottomRight {
-                    let widthSign: CGFloat = newRect.width >= 0 ? 1 : -1
-                    let heightSign: CGFloat = newRect.height >= 0 ? 1 : -1
+                if [.topLeft,.topRight,.bottomLeft,.bottomRight].contains(handle) {
+                    let wsgn: CGFloat = newRect.width >= 0 ? 1 : -1
+                    let hsgn: CGFloat = newRect.height >= 0 ? 1 : -1
                     if abs(newRect.width) > abs(newRect.height * aspect) {
-                        newRect.size.height = abs(newRect.width) / aspect * heightSign
+                        newRect.size.height = abs(newRect.width) / aspect * hsgn
                     } else {
-                        newRect.size.width = abs(newRect.height * aspect) * widthSign
+                        newRect.size.width  = abs(newRect.height * aspect) * wsgn
                     }
                 }
             }
-
-            // ⚠️ Non-destructive while pasting: just update the preview buffers
             if let image = originalSelectedImage {
-                // Create a scaled copy for the preview
                 let scaled = NSImage(size: newRect.size)
                 scaled.lockFocus()
                 image.draw(in: NSRect(origin: .zero, size: newRect.size),
@@ -839,92 +936,75 @@ class CanvasView: NSView {
                            operation: .copy,
                            fraction: 1.0)
                 scaled.unlockFocus()
-
                 selectedImage = scaled
                 selectedImageOrigin = newRect.origin
                 selectionRect = newRect
             }
-
             needsDisplay = true
             return
         }
-        
-        // === Canvas resize ===
+
+        // Canvas resize preview (zoomed or not): keep scroll origin pinned on EVERY drag tick.
         if isResizingCanvas, let handle = activeResizeHandle {
+            var newRect = initialCanvasRect
             let dx = point.x - dragStartPoint.x
             let dy = point.y - dragStartPoint.y
-            var newRect = initialCanvasRect
 
             switch handle {
             case .bottomLeft:
-                newRect.origin.x += dx
-                newRect.origin.y += dy
-                newRect.size.width  -= dx
-                newRect.size.height -= dy
+                newRect.origin.x += dx; newRect.origin.y += dy
+                newRect.size.width  -= dx; newRect.size.height -= dy
             case .bottomCenter:
-                newRect.origin.y += dy
-                newRect.size.height -= dy
+                newRect.origin.y += dy; newRect.size.height -= dy
             case .bottomRight:
-                newRect.origin.y += dy
-                newRect.size.height -= dy
-                newRect.size.width  += dx
+                newRect.origin.y += dy; newRect.size.height -= dy; newRect.size.width += dx
             case .middleLeft:
-                newRect.origin.x += dx
-                newRect.size.width -= dx
+                newRect.origin.x += dx; newRect.size.width  -= dx
             case .middleRight:
                 newRect.size.width += dx
             case .topLeft:
-                newRect.origin.x += dx
-                newRect.size.width  -= dx
-                newRect.size.height += dy
+                newRect.origin.x += dx; newRect.size.width  -= dx; newRect.size.height += dy
             case .topCenter:
                 newRect.size.height += dy
             case .topRight:
-                newRect.size.width  += dx
-                newRect.size.height += dy
+                newRect.size.width  += dx; newRect.size.height += dy
             }
 
-            // Enforce min size while keeping the *opposite* edge anchored:
+            // Min size while keeping opposite edge anchored
             if newRect.width < 50 {
-                switch handle {
-                case .bottomLeft, .middleLeft, .topLeft:
-                    newRect.origin.x = initialCanvasRect.maxX - 50
-                default: break
-                }
+                switch handle { case .bottomLeft, .middleLeft, .topLeft: newRect.origin.x = initialCanvasRect.maxX - 50; default: break }
                 newRect.size.width = 50
             }
             if newRect.height < 50 {
-                switch handle {
-                case .bottomLeft, .bottomCenter, .bottomRight:
-                    newRect.origin.y = initialCanvasRect.maxY - 50
-                default: break
-                }
+                switch handle { case .bottomLeft, .bottomCenter, .bottomRight: newRect.origin.y = initialCanvasRect.maxY - 50; default: break }
                 newRect.size.height = 50
             }
 
-            // 🔴 Preview only: update the model rect and redraw. Do NOT touch the view frame here.
+            // PREVIEW ONLY (no frame/ICS churn)
             canvasRect = newRect
             needsDisplay = true
+
+            // 🔒 keep scrollbars frozen while dragging
+            maintainScrollFreeze()
+
             return
         }
-        
-        // === Dragging selection ===
+
+        // Dragging selection (unchanged)
         if isDraggingSelection,
            let startPoint = selectionDragStartPoint,
            let imageOrigin = selectionImageStartOrigin,
            let selectedImage = selectedImage {
-
             let dx = point.x - startPoint.x
             let dy = point.y - startPoint.y
             let newOrigin = NSPoint(x: imageOrigin.x + dx, y: imageOrigin.y + dy)
-
             selectedImageOrigin = newOrigin
             selectionRect = NSRect(origin: newOrigin, size: selectedImage.size)
             needsDisplay = true
             return
         }
 
-        // === Tool actions ===
+        // Tools (unchanged behaviour)
         switch currentTool {
         case .select:
             if !isPastingImage {
@@ -933,7 +1013,7 @@ class CanvasView: NSView {
                 needsDisplay = true
             }
         case .spray:
-            currentSprayPoint = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
+            currentSprayPoint = convertZoomedPointToCanvas(viewPt)
         case .text:
             if isCreatingText {
                 textBoxRect = rectBetween(startPoint, and: point)
@@ -942,31 +1022,25 @@ class CanvasView: NSView {
         case .pencil, .brush:
             currentPath?.line(to: point)
             drawCurrentPathToCanvas()
-            currentPath = NSBezierPath()
-            currentPath?.move(to: point)
+            currentPath = NSBezierPath(); currentPath?.move(to: point)
         case .eraser:
             currentPath?.line(to: point)
             drawCurrentPathToCanvas()
             eraseDot(at: point)
-            currentPath = NSBezierPath()
-            currentPath?.move(to: point)
+            currentPath = NSBezierPath(); currentPath?.move(to: point)
         case .line, .rect, .roundRect, .ellipse:
             endPoint = point
-            // === Shift constraints for shapes ===
-            let shiftPressed = event.modifierFlags.contains(.shift)
             if shiftPressed {
                 let dx = endPoint.x - startPoint.x
                 let dy = endPoint.y - startPoint.y
                 switch currentTool {
                 case .line:
-                    // Constrain to 45-degree increments
                     let angle = atan2(dy, dx)
                     let snap = round(angle / (.pi / 4)) * (.pi / 4)
                     let length = hypot(dx, dy)
                     endPoint = NSPoint(x: startPoint.x + cos(snap) * length,
                                        y: startPoint.y + sin(snap) * length)
                 case .rect, .roundRect, .ellipse:
-                    // Force square/circle
                     let size = max(abs(dx), abs(dy))
                     endPoint.x = startPoint.x + (dx >= 0 ? size : -size)
                     endPoint.y = startPoint.y + (dy >= 0 ? size : -size)
@@ -976,57 +1050,66 @@ class CanvasView: NSView {
             needsDisplay = true
         case .curve:
             switch curvePhase {
-            case 0: curveEnd = point
-            case 1: control1 = point
-            case 2: control2 = point
+            case 0: curveEnd  = point
+            case 1: control1  = point
+            case 2: control2  = point
             default: break
             }
             needsDisplay = true
-        default: break
+        default:
+            break
         }
     }
 
     override func mouseUp(with event: NSEvent) {
         if currentTool != .zoom { zoomPreviewRect = nil }
+
         if isResizingCanvas {
             isResizingCanvas = false
-
-            // Remember which axes went negative during the drag,
-            // BEFORE the commit resets canvasRect.origin to (0,0)
-            let needZeroX = canvasRect.minX < 0
-            let needZeroY = canvasRect.minY < 0
-
             let handleUsed = activeResizeHandle
-            cropCanvasImageToCanvasRect(using: handleUsed)   // commits pixels, re-calibrates to (0,0)
+            cropCanvasImageToCanvasRect(using: handleUsed)  // commits + syncs frame/ICS
             activeResizeHandle = nil
 
-            //endScrollFreeze()
-            
-            // Defer to next runloop so NSScrollView finishes its own adjustments first
+            // Stop freezing BEFORE any deferred scrolling we do next.
+            endScrollFreeze()
+
+            // Optional: after commit, keep the anchor corner visible
             if let sv = enclosingScrollView {
                 DispatchQueue.main.async { [weak self, weak sv] in
-                    guard let self = self, let sv = sv else { return }
-                    let clip = sv.contentView
+                    guard let self = self, let _ = sv else { return }
 
-                    if let h = handleUsed {
-                        let w = self.canvasRect.width
-                        let hgt = self.canvasRect.height
-                        let anchorRect: NSRect
-                        switch h {
-                        case .topRight:     anchorRect = NSRect(x: w - 1, y: hgt - 1, width: 1, height: 1)
-                        case .topCenter:    anchorRect = NSRect(x: w / 2,  y: hgt - 1, width: 1, height: 1)
-                        case .middleRight:  anchorRect = NSRect(x: w - 1,  y: hgt / 2, width: 1, height: 1)
-                        case .topLeft:      anchorRect = NSRect(x: 1,      y: hgt - 1, width: 1, height: 1)
-                        case .bottomRight:  anchorRect = NSRect(x: w - 1,  y: 1,       width: 1, height: 1)
-                        case .bottomCenter: anchorRect = NSRect(x: w / 2,  y: 1,       width: 1, height: 1)
-                        case .middleLeft:   anchorRect = NSRect(x: 1,      y: hgt / 2, width: 1, height: 1)
-                        case .bottomLeft:   anchorRect = NSRect(x: 0,      y: 0,       width: 1, height: 1)
-                        }
-                        self.scrollToVisible(anchorRect)
+                    let w = self.canvasRect.width
+                    let h = self.canvasRect.height
+
+                    // Choose the anchor in *canvas* coords
+                    let canvasAnchor: NSRect
+                    switch handleUsed {
+                    case .topRight?:     canvasAnchor = NSRect(x: w - 1, y: h - 1, width: 1, height: 1)
+                    case .topCenter?:    canvasAnchor = NSRect(x: w / 2,  y: h - 1, width: 1, height: 1)
+                    case .middleRight?:  canvasAnchor = NSRect(x: w - 1,  y: h / 2, width: 1, height: 1)
+                    case .topLeft?:      canvasAnchor = NSRect(x: 1,      y: h - 1, width: 1, height: 1)
+                    case .bottomRight?:  canvasAnchor = NSRect(x: w - 1,  y: 1,      width: 1, height: 1)
+                    case .bottomCenter?: canvasAnchor = NSRect(x: w / 2,  y: 1,      width: 1, height: 1)
+                    case .middleLeft?:   canvasAnchor = NSRect(x: 1,      y: h / 2,  width: 1, height: 1)
+                    case .bottomLeft?:   fallthrough
+                    default:             canvasAnchor = NSRect(x: 0,      y: 0,      width: 1, height: 1)
                     }
+
+                    // Convert to *view* coords if zoomed
+                    let target: NSRect
+                    if self.isZoomed {
+                        target = NSRect(x: canvasAnchor.origin.x * self.zoomScale,
+                                        y: canvasAnchor.origin.y * self.zoomScale,
+                                        width:  canvasAnchor.size.width  * self.zoomScale,
+                                        height: canvasAnchor.size.height * self.zoomScale)
+                    } else {
+                        target = canvasAnchor
+                    }
+
+                    self.scrollToVisibleSafe(target)
                 }
             }
-
+            
             needsDisplay = true
             return
         }
@@ -1050,48 +1133,52 @@ class CanvasView: NSView {
             return
         }
 
-        let point = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
+        let pt = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
         let shiftPressed = event.modifierFlags.contains(.shift)
-        emitStatusUpdate(cursor: point)
+        emitStatusUpdate(cursor: pt)
 
         if let image = selectedImage, let io = selectedImageOrigin {
             let rect = NSRect(origin: io, size: image.size)
-            if !rect.contains(point) {
+            if !rect.contains(pt) {
                 commitSelection()
                 return
             }
         }
 
-        // === Commit pasted content only if mouse up outside the selection frame ===
         if isPastingImage, let image = selectedImage, let io = selectedImageOrigin {
             let frame = NSRect(origin: io, size: image.size)
-            let upPoint = convertZoomedPointToCanvas(convert(event.locationInWindow, from: nil))
-            if !frame.contains(upPoint) {
-                // Reuse selection commit for paste, then exit paste mode
+            if !frame.contains(pt) {
                 commitSelection()
                 isPastingImage = false
                 isPastingActive = false
                 needsDisplay = true
                 return
             }
-            // If mouse up inside, keep editing (no commit)
         }
-        endPoint = point
+
+        endPoint = pt
 
         switch currentTool {
         case .select:
             guard let rect = selectionRect else { return }
+            let src = imgRect(rect)
+
             let image = NSImage(size: rect.size)
             image.lockFocus()
-            canvasImage?.draw(at: .zero, from: rect, operation: .copy, fraction: 1.0)
+            canvasImage?.draw(in: NSRect(origin: .zero, size: rect.size),
+                              from: src,
+                              operation: .copy,
+                              fraction: 1.0,
+                              respectFlipped: true,
+                              hints: [.interpolation: NSImageInterpolation.none])
             image.unlockFocus()
+
             selectedImage = image
             selectedImageOrigin = rect.origin
-            // Reset one-time clear flag for this new floating selection
             clearedOriginalAreaForCurrentSelection = false
             window?.invalidateCursorRects(for: self)
             needsDisplay = true
-
+            
         case .spray:
             stopSpray()
 
@@ -1107,8 +1194,7 @@ class CanvasView: NSView {
                 initializeCanvasIfNeeded()
                 canvasImage?.lockFocus()
                 currentColour.set()
-                let dotRect = NSRect(x: startPoint.x, y: startPoint.y, width: 1, height: 1)
-                dotRect.fill()
+                NSRect(x: startPoint.x, y: startPoint.y, width: 1, height: 1).fill()
                 canvasImage?.unlockFocus()
                 needsDisplay = true
             }
@@ -1119,12 +1205,9 @@ class CanvasView: NSView {
                 initializeCanvasIfNeeded()
                 canvasImage?.lockFocus()
                 currentColour.set()
-                let brushSize = max(1, toolSize) // match selector size
-                let dotRect = NSRect(x: startPoint.x - brushSize/2,
-                                     y: startPoint.y - brushSize/2,
-                                     width: brushSize,
-                                     height: brushSize)
-                NSBezierPath(ovalIn: dotRect).fill()
+                let b = max(1, toolSize)
+                let dot = NSRect(x: startPoint.x - b/2, y: startPoint.y - b/2, width: b, height: b)
+                NSBezierPath(ovalIn: dot).fill()
                 canvasImage?.unlockFocus()
                 needsDisplay = true
             }
@@ -1139,8 +1222,6 @@ class CanvasView: NSView {
 
         case .line, .rect, .roundRect, .ellipse:
             var finalEnd = endPoint
-
-            // === Shift constraints at commit time ===
             if shiftPressed {
                 let dx = finalEnd.x - startPoint.x
                 let dy = finalEnd.y - startPoint.y
@@ -1158,49 +1239,59 @@ class CanvasView: NSView {
                 default: break
                 }
             }
-
             if pointsAreEqual(startPoint, finalEnd) {
                 initializeCanvasIfNeeded()
                 canvasImage?.lockFocus()
                 currentColour.set()
-                let dotRect = NSRect(x: startPoint.x, y: startPoint.y, width: 1, height: 1)
-                dotRect.fill()
+                NSRect(x: startPoint.x, y: startPoint.y, width: 1, height: 1).fill()
                 canvasImage?.unlockFocus()
             } else {
-                endPoint = finalEnd // use corrected endPoint
+                endPoint = finalEnd
                 drawShape(to: canvasImage)
             }
             isDrawingShape = false
             needsDisplay = true
 
         case .curve:
+            // mouseUp(with:), case .curve
             switch curvePhase {
             case 0:
                 curvePhase = 1
+
             case 1:
-                control1 = point
+                control1 = pt
+                control2 = control1
                 curvePhase = 2
+
             case 2:
-                control2 = point
+                control2 = pt
+
+                // Same effective logic as preview
+                let c1Eff = control1
+                let c2Eff = (pointsAreEqual(control2, curveEnd) ? curveEnd : control2)
+
                 let path = NSBezierPath()
                 path.move(to: curveStart)
-                path.curve(to: curveEnd, controlPoint1: control1, controlPoint2: control2)
+                path.curve(to: curveEnd, controlPoint1: c1Eff, controlPoint2: c2Eff)
                 path.lineWidth = toolSize
-                let translatedPath = path.copy() as! NSBezierPath
-                let transform = AffineTransform(translationByX: -canvasRect.origin.x, byY: -canvasRect.origin.y)
-                translatedPath.transform(using: transform)
+
+                let translated = path.copy() as! NSBezierPath
+                let t = AffineTransform(translationByX: -canvasRect.origin.x, byY: -canvasRect.origin.y)
+                translated.transform(using: t)
+
                 canvasImage?.lockFocus()
                 currentColour.set()
-                translatedPath.stroke()
+                translated.stroke()
                 canvasImage?.unlockFocus()
-                drawnPaths.append((path: translatedPath.copy() as! NSBezierPath, colour: currentColour))
+                drawnPaths.append((path: translated.copy() as! NSBezierPath, colour: currentColour))
+
+                // Reset curve state
                 curvePhase = 0
-                curveStart = .zero
-                curveEnd = .zero
-                control1 = .zero
-                control2 = .zero
+                curveStart = .zero; curveEnd = .zero
+                control1 = .zero;   control2 = .zero
                 isDrawingShape = false
                 needsDisplay = true
+
             default:
                 break
             }
@@ -1239,6 +1330,17 @@ class CanvasView: NSView {
     
     override func keyDown(with event: NSEvent) {
         guard event.type == .keyDown else { return }
+        
+        if event.keyCode == 53 /* ESC */ && currentTool == .curve {
+            curvePhase = 0
+            curveStart = .zero
+            curveEnd   = .zero
+            control1   = .zero
+            control2   = .zero
+            cancelCurvePreview = true
+            needsDisplay = true
+            return
+        }
 
         // Handle Command-shortcuts first
         if event.modifierFlags.contains(.command) {
@@ -1337,31 +1439,33 @@ class CanvasView: NSView {
     // Promote the current rectangular selection to a floating bitmap and
     // CUT the pixels from the canvas once (no-op if already floating).
     private func cutSelectionToFloatingIfNeeded() {
-        guard selectedImage == nil,                         // not floating yet
-              let rect = selectionRect,                    // have a selection
-              let base = canvasImage,                      // have pixels to cut
-              rect.width > 0, rect.height > 0
-        else { return }
+        guard selectedImage == nil,
+              let rect = selectionRect,
+              let base = canvasImage,
+              rect.width > 0, rect.height > 0 else { return }
 
-        // 1) Copy the selected pixels into a new image (the “floating” selection)
+        let src = imgRect(rect)
+
+        // Copy out to floating bitmap
         let img = NSImage(size: rect.size)
         img.lockFocus()
-        base.draw(at: .zero, from: rect, operation: .copy, fraction: 1.0)
+        base.draw(in: NSRect(origin: .zero, size: rect.size),
+                  from: src,
+                  operation: .copy,
+                  fraction: 1.0,
+                  respectFlipped: true,
+                  hints: [.interpolation: NSImageInterpolation.none])
         img.unlockFocus()
         selectedImage = img
 
-        // 2) CUT (clear) the original region on the canvas
+        // Clear original area on base
         base.lockFocus()
-        NSColor.white.setFill() // or a background color if you support one
-        rect.fill()
+        NSColor.white.setFill()
+        src.fill()
         base.unlockFocus()
 
-        // Mark one-time clear complete
         clearedOriginalAreaForCurrentSelection = true
         hasMovedSelection = true
-
-        // Keep selectionRect as the floating rect (same origin to start)
-        // (If you track a separate floating origin, update that instead.)
     }
 
     /// Clear the original pixels under the *current* floating selection exactly once.
@@ -1472,11 +1576,11 @@ class CanvasView: NSView {
     func commitSelection() {
         saveUndoState()
         guard let image = selectedImage, let origin = selectedImageOrigin else { return }
-        let imageRect = NSRect(origin: origin, size: image.size)
-        let intersection = imageRect.intersection(canvasRect)
+
+        let imageRect = NSRect(origin: origin, size: image.size)      // view-space
+        let intersection = imageRect.intersection(canvasRect)          // view-space
 
         guard !intersection.isEmpty else {
-            // Entire selection is outside the canvas — discard it
             selectedImage = nil
             selectedImageOrigin = nil
             selectionRect = nil
@@ -1486,22 +1590,27 @@ class CanvasView: NSView {
             return
         }
 
-        // Calculate the portion of the image that intersects canvasRect
-        let drawOriginInImage = NSPoint(x: intersection.origin.x - origin.x,
-                                        y: intersection.origin.y - origin.y)
-        let drawRectInImage = NSRect(origin: drawOriginInImage, size: intersection.size)
+        // Source (inside the selection bitmap)
+        let srcInSelection = NSRect(
+            origin: NSPoint(x: intersection.origin.x - origin.x,
+                            y: intersection.origin.y - origin.y),
+            size: intersection.size
+        )
+
+        // Destination (inside canvasImage, i.e. image-space)
+        let destInImageOrigin = imgPoint(intersection.origin)
+        let destInImageRect   = NSRect(origin: destInImageOrigin, size: intersection.size)
 
         initializeCanvasIfNeeded()
         canvasImage?.lockFocus()
-
-        image.draw(at: intersection.origin,
-                   from: drawRectInImage,
+        image.draw(in: destInImageRect,
+                   from: srcInSelection,
                    operation: .sourceOver,
-                   fraction: 1.0)
-
+                   fraction: 1.0,
+                   respectFlipped: true,
+                   hints: [.interpolation: NSImageInterpolation.none])
         canvasImage?.unlockFocus()
 
-        // Clear selection state
         selectedImage = nil
         selectedImageOrigin = nil
         selectionRect = nil
@@ -1587,32 +1696,47 @@ class CanvasView: NSView {
         redoStack.append(current)
         applySnapshot(last)
     }
-
-    // REPLACE redo() with this:
+    
     @objc func redo() {
         guard let next = redoStack.popLast() else { return }
         let current = CanvasSnapshot(image: canvasImage?.copy() as? NSImage, rect: canvasRect)
         undoStack.append(current)
         applySnapshot(next)
     }
-
-    // ADD this small helper:
+    
+    // Replace your current applySnapshot with this version
     private func applySnapshot(_ snap: CanvasSnapshot) {
+        // 1) Restore pixels + logical size
         canvasImage = snap.image?.copy() as? NSImage
-        canvasRect  = snap.rect
+        let size    = snap.rect.size
 
-        // Keep view/scroll sizing in sync WITHOUT re-rendering pixels.
-        setFrameSize(snap.rect.size)
+        // 2) Keep the canvas inside the gutter (don’t leave origin at 0,0)
+        canvasRect.origin = NSPoint(x: resizeGutter, y: resizeGutter)
+        canvasRect.size   = size
+
+        // 3) Size the documentView including gutter and zoom
+        let s   = isZoomed ? zoomScaleSafe : 1.0
+        let pad = resizeGutter * s * 2
+        let frameSize = NSSize(width:  floor(size.width  * s) + pad,
+                               height: floor(size.height * s) + pad)
+        setFrameSize(frameSize)
+
+        // 4) Normal invalidations
         invalidateIntrinsicContentSize()
         window?.invalidateCursorRects(for: self)
+        applyScrollGutters()
 
-        // Reset curve preview state after timeline ops
+        // 5) Clamp the clip view now that the documentView size changed
+        constrainClipViewBoundsNow()
+
+        // 6) Reset transient preview state
         curvePhase = 0
         curveStart = .zero
-        curveEnd = .zero
-        control1 = .zero
-        control2 = .zero
+        curveEnd   = .zero
+        control1   = .zero
+        control2   = .zero
         cancelCurvePreview = false
+        zoomPreviewRect = nil
 
         needsDisplay = true
     }
@@ -1625,6 +1749,7 @@ class CanvasView: NSView {
             setFrameSize(newSize)
             invalidateIntrinsicContentSize()
             window?.invalidateCursorRects(for: self)
+            applyScrollGutters()
             return
         }
 
@@ -1704,24 +1829,45 @@ class CanvasView: NSView {
         // Commit (drop vector cache to prevent ghost strokes)
         commitRasterChange(newImage, resetVectors: true)
 
-        // Re-calibrate model/view to (0,0) and sync with the scroll view; leave actual
-        // scroll position correction to mouseUp (deferred) to avoid AppKit overriding it.
-        canvasRect = NSRect(origin: .zero, size: newSize)
-        setFrameSize(newSize)
+        // Re-calibrate model/view to keep the canvas INSIDE a gutter ring
+        canvasRect.origin = NSPoint(x: resizeGutter, y: resizeGutter)
+        canvasRect.size   = newSize
+
+        // Size the documentView including gutter, and respect zoom
+        let s   = isZoomed ? zoomScaleSafe : 1.0
+        let pad = resizeGutter * s * 2
+        let frameSize = NSSize(width:  floor(newSize.width  * s) + pad,
+                               height: floor(newSize.height * s) + pad)
+        setFrameSize(frameSize)
         invalidateIntrinsicContentSize()
         window?.invalidateCursorRects(for: self)
+        applyScrollGutters()
+        needsDisplay = true
     }
     
     // MARK: - Uniform zoom helpers (1:1 pixel aspect with letterboxing)
     private func updateZoomDocumentSize() {
-        let size = isZoomed
-            ? NSSize(width: floor(canvasRect.width  * zoomScale),
-                     height: floor(canvasRect.height * zoomScale))
-            : canvasRect.size
-
+        let s   = isZoomed ? zoomScaleSafe : 1.0
+        let pad = resizeGutter * s * 2
+        let size = NSSize(width:  max(1, floor(canvasRect.width  * s)) + pad,
+                          height: max(1, floor(canvasRect.height * s)) + pad)
         setFrameSize(size)
         invalidateIntrinsicContentSize()
         window?.invalidateCursorRects(for: self)
+        applyScrollGutters()
+    }
+    
+    @inline(__always)
+    private func imgPoint(_ p: NSPoint) -> NSPoint {
+        NSPoint(x: p.x - canvasRect.origin.x, y: p.y - canvasRect.origin.y)
+    }
+
+    @inline(__always)
+    private func imgRect(_ r: NSRect) -> NSRect {
+        NSRect(x: r.origin.x - canvasRect.origin.x,
+               y: r.origin.y - canvasRect.origin.y,
+               width: r.size.width,
+               height: r.size.height)
     }
     
     private func zoomScaleAndOffset() -> (scale: CGFloat, offset: NSPoint) {
@@ -1733,15 +1879,16 @@ class CanvasView: NSView {
     }
 
     private func toZoomed(_ p: NSPoint) -> NSPoint {
-        return isZoomed ? NSPoint(x: p.x * zoomScale, y: p.y * zoomScale) : p
+        guard isZoomed else { return p }
+        let z = zoomScaleSafe
+        return .init(x: p.x * z, y: p.y * z)
     }
+    
     private func toZoomed(_ r: NSRect) -> NSRect {
-        return isZoomed
-            ? NSRect(x: r.origin.x * zoomScale,
-                     y: r.origin.y * zoomScale,
-                     width:  r.size.width * zoomScale,
-                     height: r.size.height * zoomScale)
-            : r
+        guard isZoomed else { return r }
+        let z = zoomScaleSafe
+        return .init(x: r.origin.x * z, y: r.origin.y * z,
+                     width: r.size.width * z, height: r.size.height * z)
     }
 
     private func fromZoomed(_ p: NSPoint) -> NSPoint {
@@ -1877,31 +2024,105 @@ class CanvasView: NSView {
         needsDisplay = true
     }
     
-    private func resizeHandle(at p: NSPoint) -> ResizeHandle? {
+    // Hit-test for canvas border/corners in VIEW coordinates (works with zoom + gutters).
+    private func resizeHandleHit(atViewPoint p: NSPoint) -> ResizeHandle? {
+        // Canvas border rect in VIEW space
+        let rV: NSRect = isZoomed
+            ? NSRect(x: 0, y: 0,
+                     width:  canvasRect.width  * zoomScale,
+                     height: canvasRect.height * zoomScale)
+            : canvasRect
+
+        // Only react if we're inside the border "ring"
+        let inner = rV.insetBy(dx:  borderHitWidth, dy:  borderHitWidth)
+        let outer = rV.insetBy(dx: -borderHitWidth, dy: -borderHitWidth)
+        guard outer.contains(p), !inner.contains(p) else { return nil }
+
+        // Prefer corners first (diagonal resize)
+        let s = borderHitWidth * 2
+        let tl = NSRect(x: rV.minX - borderHitWidth, y: rV.maxY - borderHitWidth, width: s, height: s)
+        let tc = NSRect(x: rV.midX - borderHitWidth, y: rV.maxY - borderHitWidth, width: s, height: s)
+        let tr = NSRect(x: rV.maxX - borderHitWidth, y: rV.maxY - borderHitWidth, width: s, height: s)
+        let ml = NSRect(x: rV.minX - borderHitWidth, y: rV.midY - borderHitWidth, width: s, height: s)
+        let mr = NSRect(x: rV.maxX - borderHitWidth, y: rV.midY - borderHitWidth, width: s, height: s)
+        let bl = NSRect(x: rV.minX - borderHitWidth, y: rV.minY - borderHitWidth, width: s, height: s)
+        let bc = NSRect(x: rV.midX - borderHitWidth, y: rV.minY - borderHitWidth, width: s, height: s)
+        let br = NSRect(x: rV.maxX - borderHitWidth, y: rV.minY - borderHitWidth, width: s, height: s)
+
+        if tl.contains(p) { return .topLeft }
+        if tr.contains(p) { return .topRight }
+        if bl.contains(p) { return .bottomLeft }
+        if br.contains(p) { return .bottomRight }
+
+        if tc.contains(p) { return .topCenter }
+        if bc.contains(p) { return .bottomCenter }
+        if ml.contains(p) { return .middleLeft }
+        if mr.contains(p) { return .middleRight }
+
+        return nil
+    }
+
+    // Returns which resize handle was hit, using an OUTSIDE ring around `canvasRect`.
+    /// Hit-test for canvas resize. When `generous` is true we expand the bands so
+    /// zoom-clicks near the edge are treated as resize gestures instead of toggling zoom.
+    private func resizeHandle(at p: NSPoint, generous: Bool = false) -> ResizeHandle? {
         let r = canvasRect
-        let edge = edgeGrabThickness
-        let corner = cornerGrabSize
+        let z = zoomScaleSafe
 
-        // Corner first (diagonal only when near the corner square)
-        let nearTopLeft     = abs(p.x - r.minX) <= corner && abs(p.y - r.maxY) <= corner
-        let nearTopRight    = abs(p.x - r.maxX) <= corner && abs(p.y - r.maxY) <= corner
-        let nearBottomLeft  = abs(p.x - r.minX) <= corner && abs(p.y - r.minY) <= corner
-        let nearBottomRight = abs(p.x - r.maxX) <= corner && abs(p.y - r.minY) <= corner
-        if nearTopLeft     { return .topLeft }
-        if nearTopRight    { return .topRight }
-        if nearBottomLeft  { return .bottomLeft }
-        if nearBottomRight { return .bottomRight }
+        // Visual sizes (constant to the eye), converted to canvas space.
+        let edgeV: CGFloat    = generous ? 14 : 8      // edge band thickness (view px)
+        let cornerV: CGFloat  = generous ? 24 : 16     // corner square (view px)
+        let edge  = isZoomed ? max(1, edgeV   / z) : edgeV
+        let corner = isZoomed ? max(1, cornerV / z) : cornerV
 
-        // Otherwise any point along an edge is valid for 1-axis resize
-        let onLeft   = abs(p.x - r.minX) <= edge && p.y >= r.minY - edge && p.y <= r.maxY + edge
-        let onRight  = abs(p.x - r.maxX) <= edge && p.y >= r.minY - edge && p.y <= r.maxY + edge
-        let onTop    = abs(p.y - r.maxY) <= edge && p.x >= r.minX - edge && p.x <= r.maxX + edge
-        let onBottom = abs(p.y - r.minY) <= edge && p.x >= r.minX - edge && p.x <= r.maxX + edge
+        // Keep the exact border free for drawing. Epsilon moves the bands strictly outside.
+        let eps: CGFloat = isZoomed ? max(0.5 / z, 0.25) : 0.5
 
-        if onTop    { return .topCenter }
-        if onBottom { return .bottomCenter }
-        if onLeft   { return .middleLeft }
-        if onRight  { return .middleRight }
+        // --- Corners OUTSIDE the canvas (four little squares just beyond each corner) ---
+        // TL: left of minX and above maxY
+        let tl = NSRect(x: r.minX - corner, y: r.maxY + eps, width: corner, height: corner)
+        if tl.contains(p) { return .topLeft }
+
+        // TR: right of maxX and above maxY
+        let tr = NSRect(x: r.maxX + eps, y: r.maxY + eps, width: corner, height: corner)
+        if tr.contains(p) { return .topRight }
+
+        // BL: left of minX and below minY
+        let bl = NSRect(x: r.minX - corner, y: r.minY - corner - eps, width: corner, height: corner)
+        if bl.contains(p) { return .bottomLeft }
+
+        // BR: right of maxX and below minY
+        let br = NSRect(x: r.maxX + eps, y: r.minY - corner - eps, width: corner, height: corner)
+        if br.contains(p) { return .bottomRight }
+
+        // --- Edge bands OUTSIDE the canvas (avoid corners by insetting with corner*0.5) ---
+        // Top band just above the canvas
+        let top = NSRect(x: r.minX + corner * 0.5,
+                         y: r.maxY + eps,
+                         width: max(0, r.width - corner),
+                         height: edge)
+        if top.contains(p) { return .topCenter }
+
+        // Bottom band just below the canvas
+        let bottom = NSRect(x: r.minX + corner * 0.5,
+                            y: r.minY - edge - eps,
+                            width: max(0, r.width - corner),
+                            height: edge)
+        if bottom.contains(p) { return .bottomCenter }
+
+        // Left band just left of the canvas
+        let left = NSRect(x: r.minX - edge - eps,
+                          y: r.minY + corner * 0.5,
+                          width: edge,
+                          height: max(0, r.height - corner))
+        if left.contains(p) { return .middleLeft }
+
+        // Right band just right of the canvas
+        let right = NSRect(x: r.maxX + eps,
+                           y: r.minY + corner * 0.5,
+                           width: edge,
+                           height: max(0, r.height - corner))
+        if right.contains(p) { return .middleRight }
 
         return nil
     }
@@ -1944,96 +2165,154 @@ class CanvasView: NSView {
         canvasImage = newImage
     }
     
+    // MARK: Diagonal resize cursors (fallbacks if images aren’t available)
+    private var diagonalNWSECursor: NSCursor {
+        let p = "/System/Library/Frameworks/WebKit.framework/Versions/Current/Frameworks/WebCore.framework/Resources/northWestSouthEastResizeCursor.png"
+        if FileManager.default.fileExists(atPath: p), let img = NSImage(contentsOfFile: p) {
+            return NSCursor(image: img, hotSpot: NSPoint(x: 8, y: 8))
+        }
+        return .crosshair // sensible fallback
+    }
+
+    private var diagonalNESWCursor: NSCursor {
+        let p = "/System/Library/Frameworks/WebKit.framework/Versions/Current/Frameworks/WebCore.framework/Resources/northEastSouthWestResizeCursor.png"
+        if FileManager.default.fileExists(atPath: p), let img = NSImage(contentsOfFile: p) {
+            return NSCursor(image: img, hotSpot: NSPoint(x: 8, y: 8))
+        }
+        return .crosshair // sensible fallback
+    }
+    
+    // MARK: - Safety helpers
+    private var zoomScaleSafe: CGFloat {
+        let z = zoomScale
+        return (z.isFinite && z > 0) ? z : 1.0
+    }
+
+    @inline(__always)
+    private func isFinite(_ r: NSRect) -> Bool {
+        r.origin.x.isFinite && r.origin.y.isFinite && r.size.width.isFinite && r.size.height.isFinite
+    }
+
+    private func scrollToVisibleSafe(_ rect: NSRect) {
+        guard rect.origin.x.isFinite, rect.origin.y.isFinite,
+              rect.size.width.isFinite, rect.size.height.isFinite else { return }
+        scrollToVisible(rect)
+    }
+    
+    private func constrainClipViewBoundsNow() {
+        guard let clip = enclosingScrollView?.contentView else { return }
+        let constrained = clip.constrainBoundsRect(clip.bounds).origin
+        guard constrained.x.isFinite, constrained.y.isFinite else { return }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0
+            clip.setBoundsOrigin(constrained)
+            (clip.superview as? NSScrollView)?.reflectScrolledClipView(clip)
+        }
+    }
+
+    private func addCursorRectIfFinite(_ r: NSRect, cursor: NSCursor) {
+        guard r.isFiniteRect, !r.isNull, !r.isEmpty else { return }
+        let clipped = r.intersection(bounds)
+        guard clipped.isFiniteRect, !clipped.isNull, !clipped.isEmpty else { return }
+        addCursorRect(clipped, cursor: cursor)
+    }
+    
     override func resetCursorRects() {
         super.resetCursorRects()
 
-        // Canvas → view coords (scale when zoomed)
-        let s: CGFloat = isZoomed ? zoomScale : 1.0
-        func scale(_ r: NSRect) -> NSRect {
-            return isZoomed
-                ? NSRect(x: r.origin.x * s, y: r.origin.y * s, width: r.size.width * s, height: r.size.height * s)
-                : r
-        }
+        guard canvasRect.width.isFinite, canvasRect.height.isFinite,
+              canvasRect.width > 0, canvasRect.height > 0,
+              bounds.isFiniteRect, !bounds.isEmpty else { return }
 
-        let rV = scale(canvasRect)
-        let edge = edgeGrabThickness * s
-        let corner = cornerGrabSize * s
+        let s: CGFloat = (isZoomed && zoomScale.isFinite && zoomScale > 0) ? zoomScale : 1.0
+        let r = canvasRect
 
-        // Corner squares (give them priority)
-        let tl = NSRect(x: rV.minX - corner, y: rV.maxY - corner, width: 2*corner, height: 2*corner)
-        let tr = NSRect(x: rV.maxX - corner, y: rV.maxY - corner, width: 2*corner, height: 2*corner)
-        let bl = NSRect(x: rV.minX - corner, y: rV.minY - corner, width: 2*corner, height: 2*corner)
-        let br = NSRect(x: rV.maxX - corner, y: rV.minY - corner, width: 2*corner, height: 2*corner)
+        // Visual sizes in VIEW pixels
+        let cornerV: CGFloat = 16
+        let edgeV: CGFloat   = 8
+        let epsV: CGFloat    = 0.5    // keeps exact border free for drawing
 
-        // Edge bands (trimmed to avoid overlap with corners)
-        let top    = NSRect(x: rV.minX + corner, y: rV.maxY - edge, width: rV.width - 2*corner, height: 2*edge)
-        let bottom = NSRect(x: rV.minX + corner, y: rV.minY - edge, width: rV.width - 2*corner, height: 2*edge)
-        let left   = NSRect(x: rV.minX - edge,   y: rV.minY + corner, width: 2*edge, height: rV.height - 2*corner)
-        let right  = NSRect(x: rV.maxX - edge,   y: rV.minY + corner, width: 2*edge, height: rV.height - 2*corner)
+        // Canvas rect in VIEW space
+        let minX = r.minX * s, maxX = r.maxX * s
+        let minY = r.minY * s, maxY = r.maxY * s
+        let widthV  = r.width  * s
+        let heightV = r.height * s
 
-        // Cursors
-        func diagNWSE() -> NSCursor {
-            return NSCursor(
-                image: NSImage(byReferencingFile: "/System/Library/Frameworks/WebKit.framework/Versions/Current/Frameworks/WebCore.framework/Resources/northWestSouthEastResizeCursor.png")!,
-                hotSpot: NSPoint(x: 8, y: 8))
-        }
-        func diagNESW() -> NSCursor {
-            return NSCursor(
-                image: NSImage(byReferencingFile: "/System/Library/Frameworks/WebKit.framework/Versions/Current/Frameworks/WebCore.framework/Resources/northEastSouthWestResizeCursor.png")!,
-                hotSpot: NSPoint(x: 8, y: 8))
-        }
+        // --- Corner squares OUTSIDE the canvas ---
+        let tl = NSRect(x: minX - cornerV, y: maxY + epsV,          width: cornerV, height: cornerV)
+        let tr = NSRect(x: maxX + epsV,     y: maxY + epsV,          width: cornerV, height: cornerV)
+        let bl = NSRect(x: minX - cornerV, y: minY - cornerV - epsV, width: cornerV, height: cornerV)
+        let br = NSRect(x: maxX + epsV,     y: minY - cornerV - epsV, width: cornerV, height: cornerV)
 
-        // Add rects (clip to our bounds to avoid warnings)
-        for (rect, cursor) in [
-            (tl, diagNWSE()), (br, diagNWSE()),
-            (tr, diagNESW()), (bl, diagNESW()),
-            (top, .resizeUpDown), (bottom, .resizeUpDown),
-            (left, .resizeLeftRight), (right, .resizeLeftRight),
-        ] {
-            let clipped = rect.intersection(bounds)
-            if !clipped.isEmpty { addCursorRect(clipped, cursor: cursor) }
+        // --- Edge bands OUTSIDE the canvas (avoid corner zones with cornerV*0.5 inset) ---
+        let top    = NSRect(x: minX + cornerV * 0.5, y: maxY + epsV,           width: widthV  - cornerV, height: edgeV)
+        let bottom = NSRect(x: minX + cornerV * 0.5, y: minY - edgeV - epsV,   width: widthV  - cornerV, height: edgeV)
+        let left   = NSRect(x: minX - edgeV - epsV,  y: minY + cornerV * 0.5,  width: edgeV,             height: heightV - cornerV)
+        let right  = NSRect(x: maxX + epsV,          y: minY + cornerV * 0.5,  width: edgeV,             height: heightV - cornerV)
+
+        // Diagonals (your custom cursors)
+        addCursorRectIfFinite(tl.intersection(bounds), cursor: .resizeDiagonalNWSE) // top-left  ↘︎↖︎
+        addCursorRectIfFinite(tr.intersection(bounds), cursor: .resizeDiagonalNESW) // top-right ↗︎↙︎
+        addCursorRectIfFinite(bl.intersection(bounds), cursor: .resizeDiagonalNESW) // bottom-left ↗︎↙︎
+        addCursorRectIfFinite(br.intersection(bounds), cursor: .resizeDiagonalNWSE) // bottom-right ↘︎↖︎
+
+        // Edges
+        addCursorRectIfFinite(top.intersection(bounds),    cursor: .resizeUpDown)
+        addCursorRectIfFinite(bottom.intersection(bounds), cursor: .resizeUpDown)
+        addCursorRectIfFinite(left.intersection(bounds),   cursor: .resizeLeftRight)
+        addCursorRectIfFinite(right.intersection(bounds),  cursor: .resizeLeftRight)
+
+        // --- Selection handles unchanged ---
+        if let selectionFrame = (selectedImage != nil
+            ? NSRect(origin: selectedImageOrigin ?? .zero, size: selectedImage!.size)
+            : selectionRect) {
+
+            let handles = selectionHandlePositions(rect: selectionFrame)
+            for (i, r0) in handles.enumerated() {
+                let scaled = isZoomed
+                    ? NSRect(x: r0.origin.x * s, y: r0.origin.y * s, width: r0.size.width * s, height: r0.size.height * s)
+                    : r0
+
+                let cursor: NSCursor = {
+                    switch i {
+                    case 1, 6: return .resizeUpDown
+                    case 3, 4: return .resizeLeftRight
+                    case 0, 7: return .resizeDiagonalNWSE   // top-left & bottom-right
+                    case 2, 5: return .resizeDiagonalNESW   // top-right & bottom-left
+                    default:   return .arrow
+                    }
+                }()
+                addCursorRectIfFinite(scaled.intersection(bounds), cursor: cursor)
+            }
         }
     }
+
     
     private func cursorForHandle(index: Int) -> NSCursor {
         switch index {
-        case 1, 6:
-            return .resizeUpDown
-        case 3, 4:
-            return .resizeLeftRight
-        case 5, 2:
-            return NSCursor(image: NSImage(byReferencingFile: "/System/Library/Frameworks/WebKit.framework/Versions/Current/Frameworks/WebCore.framework/Resources/northWestSouthEastResizeCursor.png")!, hotSpot: NSPoint(x: 8, y: 8))
-        case 7, 0:
-            return NSCursor(image: NSImage(byReferencingFile: "/System/Library/Frameworks/WebKit.framework/Versions/Current/Frameworks/WebCore.framework/Resources/northEastSouthWestResizeCursor.png")!, hotSpot: NSPoint(x: 8, y: 8))
-        default:
-            return .arrow // fallback for corners
+        case 1, 6: return .resizeUpDown
+        case 3, 4: return .resizeLeftRight
+        case 5, 2: return .resizeDiagonalNWSE   // top-left & bottom-right
+        case 7, 0: return .resizeDiagonalNESW   // top-right & bottom-left
+        default:   return .arrow
         }
     }
     
     private func selectionCursorForHandle(index: Int) -> NSCursor {
-        // SelectionHandle order: topLeft(0), topCenter(1), topRight(2),
-        //                        middleLeft(3), middleRight(4),
-        //                        bottomLeft(5), bottomCenter(6), bottomRight(7)
         switch index {
-        case 1, 6:
-            return .resizeUpDown
-        case 3, 4:
-            return .resizeLeftRight
-        case 0, 2:
-            // topLeft / topRight => diagonals
-            return NSCursor(image: NSImage(byReferencingFile: "/System/Library/Frameworks/WebKit.framework/Versions/Current/Frameworks/WebCore.framework/Resources/northWestSouthEastResizeCursor.png")!, hotSpot: NSPoint(x: 8, y: 8))
-        case 5, 7:
-            // bottomLeft / bottomRight => opposite diagonals
-            return NSCursor(image: NSImage(byReferencingFile: "/System/Library/Frameworks/WebKit.framework/Versions/Current/Frameworks/WebCore.framework/Resources/northEastSouthWestResizeCursor.png")!, hotSpot: NSPoint(x: 8, y: 8))
-        default:
-            return .arrow
+        case 1, 6: return .resizeUpDown
+        case 3, 4: return .resizeLeftRight
+        case 0, 7: return .resizeDiagonalNWSE   // top-left & bottom-right
+        case 2, 5: return .resizeDiagonalNESW   // top-right & bottom-left
+        default:   return .arrow
         }
     }
     
     // View (scaled) → canvas (unscaled)
     func convertZoomedPointToCanvas(_ point: NSPoint) -> NSPoint {
         guard isZoomed else { return point }
-        return NSPoint(x: point.x / zoomScale, y: point.y / zoomScale)
+        let z = zoomScaleSafe
+        return NSPoint(x: point.x / z, y: point.y / z)
     }
     
     override func setFrameSize(_ newSize: NSSize) {
@@ -2360,53 +2639,106 @@ class CanvasView: NSView {
         selectedImageOrigin = rect.origin
         clearedOriginalAreaForCurrentSelection = false
     }
+    
+    /// Apply 20 px gutters around the document so you can scroll a bit past the edges.
+    private func applyScrollGutters() {
+        guard let sv = enclosingScrollView else { return }
 
+        // Disable automatic adjustments so our insets stay exactly as we set them
+        if #available(macOS 11.0, *) {
+            sv.automaticallyAdjustsContentInsets = false
+        }
+
+        let insets = NSEdgeInsets(top: scrollGutter, left: scrollGutter,
+                                  bottom: scrollGutter, right: scrollGutter)
+
+        // Set on both the scroll view and its clip view to keep math consistent
+        sv.contentInsets = insets
+        sv.contentView.contentInsets = insets
+    }
+    
+    // Start freezing the scroll position until we finish resizing.
     private func beginScrollFreezeIfNeeded() {
         guard freezeClip == nil, let sv = enclosingScrollView else { return }
         let clip = sv.contentView
+
         freezeClip = clip
         freezeOrigin = clip.bounds.origin
 
-        // Turn off rubber-banding while resizing so AppKit can't "helpfully" move us.
-        savedElasticity = (sv.verticalScrollElasticity, sv.horizontalScrollElasticity)
-        sv.verticalScrollElasticity   = .none
+        // Record & enable bounds notifications so we can snap back immediately.
+        savedPostsBounds = clip.postsBoundsChangedNotifications
+        clip.postsBoundsChangedNotifications = true
+
+        // Kill bounce that can re-nudge the origin mid-resize.
+        if savedElasticity == nil {
+            savedElasticity = (sv.verticalScrollElasticity, sv.horizontalScrollElasticity)
+        }
+        sv.verticalScrollElasticity = .none
         sv.horizontalScrollElasticity = .none
+
+        // Observe origin changes and snap back.
+        scrollFreezeObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clip,
+            queue: .main
+        ) { [weak self] _ in
+            self?.maintainScrollFreeze()
+        }
+
+        // Apply once immediately.
+        maintainScrollFreeze()
     }
 
     private func maintainScrollFreeze() {
+        // Avoid re-entrancy if boundsDidChange fires again while we’re snapping back.
+        if isMaintainingScrollFreeze { return }
         guard let clip = freezeClip, let o = freezeOrigin else { return }
 
-        // Clamp the stored origin to the current document extents.
-        let doc = clip.documentRect
-        let bw  = clip.bounds.size.width
-        let bh  = clip.bounds.size.height
+        // If the clip got detached (e.g., view hierarchy changed), stop freezing.
+        guard clip.window != nil, clip.superview != nil else {
+            endScrollFreeze()
+            return
+        }
 
-        // max() guards the case where document is smaller than the visible size.
-        let maxX = max(0, doc.width  - bw)
-        let maxY = max(0, doc.height - bh)
+        isMaintainingScrollFreeze = true
+        defer { isMaintainingScrollFreeze = false }
 
-        var pinned = NSPoint(x: min(max(0, o.x), maxX),
-                             y: min(max(0, o.y), maxY))
+        var desired = clip.bounds
+        desired.origin = o
+        let constrainedOrigin = clip.constrainBoundsRect(desired).origin
+        guard constrainedOrigin != clip.bounds.origin else { return }
 
-        // Only adjust if AppKit moved us.
-        if pinned != clip.bounds.origin {
-            NSAnimationContext.beginGrouping()
-            NSAnimationContext.current.duration = 0
-            clip.scroll(to: pinned)
+        // Use scroll(to:) + reflectScrolledClipView; do it with zero-duration to avoid layout ripple.
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0
+            clip.scroll(to: constrainedOrigin)
             (clip.superview as? NSScrollView)?.reflectScrolledClipView(clip)
-            NSAnimationContext.endGrouping()
         }
     }
 
     private func endScrollFreeze() {
+        if let obs = scrollFreezeObserver {
+            NotificationCenter.default.removeObserver(obs)
+            scrollFreezeObserver = nil
+        }
+
         if let sv = enclosingScrollView, let e = savedElasticity {
-            sv.verticalScrollElasticity   = e.v
+            sv.verticalScrollElasticity = e.v
             sv.horizontalScrollElasticity = e.h
         }
         savedElasticity = nil
+
+        if let clip = freezeClip, let saved = savedPostsBounds {
+            clip.postsBoundsChangedNotifications = saved
+        }
+        savedPostsBounds = nil
+
         freezeClip = nil
         freezeOrigin = nil
+        isMaintainingScrollFreeze = false
     }
+
+
     
     override func viewWillDraw() {
         super.viewWillDraw()
@@ -2510,12 +2842,22 @@ class CanvasView: NSView {
         // Keep the bitmap in sync with the logical canvas rect
         resizeBackingImage(to: newSize)
 
-        // Update model + frame
-        canvasRect.size = newSize
-        setFrameSize(newSize)
-        window?.invalidateCursorRects(for: self)
+        // Put the drawable canvas inside an outer gutter, so clicks outside can resize.
+        canvasRect.origin = NSPoint(x: resizeGutter, y: resizeGutter)
+        canvasRect.size   = newSize
 
+        // Size the document view to include the gutter (and scale when zoomed).
+        let s   = isZoomed ? zoomScale : 1.0
+        let pad = resizeGutter * s * 2
+        let frameSize = NSSize(
+            width:  floor(newSize.width  * s) + pad,
+            height: floor(newSize.height * s) + pad
+        )
+
+        setFrameSize(frameSize)
         invalidateIntrinsicContentSize()
+        window?.invalidateCursorRects(for: self)
+        applyScrollGutters()
         needsDisplay = true
         return newSize
     }
