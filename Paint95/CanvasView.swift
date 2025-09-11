@@ -797,6 +797,7 @@ class CanvasView: NSView {
             }
             
         case .spray:
+            saveUndoState()  // ✅ one snapshot for the whole spray action
             currentSprayPoint = convertZoomedPointToCanvas(viewPt)
             startSpray()
             
@@ -1026,7 +1027,6 @@ class CanvasView: NSView {
         case .eraser:
             currentPath?.line(to: point)
             drawCurrentPathToCanvas()
-            eraseDot(at: point)
             currentPath = NSBezierPath(); currentPath?.move(to: point)
         case .line, .rect, .roundRect, .ellipse:
             endPoint = point
@@ -1414,25 +1414,29 @@ class CanvasView: NSView {
     func cutSelection() {
         guard let rect = selectionRect else { return }
 
-        // Copy to clipboard
+        // Copy to clipboard from IMAGE-SPACE
+        let src = imgRect(rect)
         let image = NSImage(size: rect.size)
         image.lockFocus()
-        canvasImage?.draw(at: .zero, from: rect, operation: .copy, fraction: 1.0)
+        canvasImage?.draw(in: NSRect(origin: .zero, size: rect.size),
+                          from: src,
+                          operation: .copy,
+                          fraction: 1.0,
+                          respectFlipped: true,
+                          hints: [.interpolation: NSImageInterpolation.none])
         image.unlockFocus()
 
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.writeObjects([image])
 
-        // Delete the content (this clears canvas + drawn paths)
-        deleteSelectionOrPastedImage()
+        // Delete the content (this clears canvas + drawn paths) using image-space path
+        clearCanvasRegion(rect: rect)
 
         // Clear selection state
         selectionRect = nil
         selectedImage = nil
         selectedImageOrigin = nil
-
-        // Redraw now — without selected preview
         needsDisplay = true
     }
     
@@ -2321,7 +2325,6 @@ class CanvasView: NSView {
     }
     
     private func eraseDot(at point: NSPoint, radius: CGFloat = 7.5) {
-        saveUndoState()
         initializeCanvasIfNeeded()
         canvasImage?.lockFocus()
         NSColor.white.set()
@@ -2358,8 +2361,9 @@ class CanvasView: NSView {
     
     func deleteSelectionOrPastedImage() {
         saveUndoState()
+
+        // If we're pasting an overlay, Delete should cancel the overlay only.
         if isPastingActive {
-            // Cancel paste: do NOT alter the canvas; just drop the overlay.
             pastedImage = nil
             pastedImageOrigin = nil
             pasteDragOffset = nil
@@ -2368,6 +2372,7 @@ class CanvasView: NSView {
             isDraggingPastedImage = false
             isPastingImage = false
             isPastingActive = false
+
             selectedImage = nil
             selectedImageOrigin = nil
             selectionRect = nil
@@ -2377,23 +2382,29 @@ class CanvasView: NSView {
             return
         }
 
+        // If we have a floating selection, clear exactly under it.
+        if let img = selectedImage, let origin = selectedImageOrigin {
+            let rect = NSRect(origin: origin, size: img.size)
+            clearCanvasRegion(rect: rect)   // ✅ converts to image-space internally
+            selectedImage = nil
+            selectedImageOrigin = nil
+            selectionRect = nil
+            clearedOriginalAreaForCurrentSelection = false
+            hasMovedSelection = false
+            needsDisplay = true
+            return
+        }
+
+        // Otherwise, if we just have a marquee, clear that area.
         if let rect = selectionRect {
-            initializeCanvasIfNeeded()
-            canvasImage?.lockFocus()
-            NSColor.white.set()
-            NSBezierPath(rect: rect).fill()
-            canvasImage?.unlockFocus()
-
-            drawnPaths.removeAll { (path, _) in
-                path.bounds.intersects(rect)
-            }
-
+            clearCanvasRegion(rect: rect)   // ✅ same image-space path
             selectionRect = nil
             selectedImage = nil
             selectedImageOrigin = nil
             clearedOriginalAreaForCurrentSelection = false
             hasMovedSelection = false
             needsDisplay = true
+            return
         }
     }
 
@@ -2621,14 +2632,21 @@ class CanvasView: NSView {
         let rect = canvasRect
         selectionRect = rect
 
+        // Copy the whole backing image (image-space)
         let image = NSImage(size: rect.size)
         image.lockFocus()
-        canvasImage?.draw(at: .zero, from: rect, operation: .copy, fraction: 1.0)
+        canvasImage?.draw(in: NSRect(origin: .zero, size: rect.size),
+                          from: imgRect(rect),   // ✅ not `rect`
+                          operation: .copy,
+                          fraction: 1.0,
+                          respectFlipped: true,
+                          hints: [.interpolation: NSImageInterpolation.none])
         image.unlockFocus()
 
         selectedImage = image
         selectedImageOrigin = rect.origin
         clearedOriginalAreaForCurrentSelection = false
+        needsDisplay = true
     }
     
     /// Apply 20 px gutters around the document so you can scroll a bit past the edges.
