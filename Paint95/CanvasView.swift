@@ -53,33 +53,16 @@ extension NSCursor {
     }()
 }
 
-// MARK: - Export snapshot (flattens any floating selection)
+// MARK: - Export snapshot (flattens any floating selection) at 1×, no gutters/zoom
 extension CanvasView {
-    /// Returns a flattened image of the visible canvas, including any floating selection.
+    /// Returns a flattened image of the canvas at **1× pixel resolution**, including any floating selection.
+    /// The output size equals the pixel size of `canvasImage` (no gutters, no Retina scaling).
     func snapshotImageForExport() -> NSImage? {
-        guard let base = canvasImage else { return nil }
-        let size = canvasRect.size
-        let out = NSImage(size: size)
-
-        out.lockFocus()
-        NSColor.white.setFill()
-        NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
-
-        // Draw the base canvas
-        base.draw(in: NSRect(origin: .zero, size: size),
-                  from: NSRect(origin: .zero, size: base.size),
-                  operation: .copy,
-                  fraction: 1.0,
-                  respectFlipped: true,
-                  hints: [.interpolation: NSImageInterpolation.none])
-
-        // If there’s a floating selection, draw it in place
-        if let sel = selectedImage, let origin = selectedImageOrigin {
-            sel.draw(at: origin, from: .zero, operation: .sourceOver, fraction: 1.0)
-        }
-
-        out.unlockFocus()
-        return out
+        guard let rep = make1xBitmapFromCanvasImage() else { return nil }
+        let img = NSImage(size: NSSize(width: rep.pixelsWide, height: rep.pixelsHigh))
+        rep.size = img.size // 1pt == 1px
+        img.addRepresentation(rep)
+        return img
     }
 }
 
@@ -1194,7 +1177,11 @@ class CanvasView: NSView {
                 initializeCanvasIfNeeded()
                 canvasImage?.lockFocus()
                 currentColour.set()
-                NSRect(x: startPoint.x, y: startPoint.y, width: 1, height: 1).fill()
+
+                // ✅ convert to image space
+                let p = imgPoint(startPoint)
+                NSRect(x: p.x, y: p.y, width: 1, height: 1).fill()
+
                 canvasImage?.unlockFocus()
                 needsDisplay = true
             }
@@ -1206,8 +1193,12 @@ class CanvasView: NSView {
                 canvasImage?.lockFocus()
                 currentColour.set()
                 let b = max(1, toolSize)
-                let dot = NSRect(x: startPoint.x - b/2, y: startPoint.y - b/2, width: b, height: b)
-                NSBezierPath(ovalIn: dot).fill()
+
+                // ✅ build rect in canvas space, then convert to image space
+                let rCanvas = NSRect(x: startPoint.x - b/2, y: startPoint.y - b/2, width: b, height: b)
+                let rImg = imgRect(rCanvas)
+                NSBezierPath(ovalIn: rImg).fill()
+
                 canvasImage?.unlockFocus()
                 needsDisplay = true
             }
@@ -1830,6 +1821,11 @@ class CanvasView: NSView {
                  hints: [.interpolation: NSImageInterpolation.none])
         newImage.unlockFocus()
 
+        if let rep = newImage.representations.compactMap({ $0 as? NSBitmapImageRep }).first {
+            // Ensure 1pt == 1px for the new raster so later exports stay 1×.
+            rep.size = newImage.size
+        }
+        
         // Commit (drop vector cache to prevent ghost strokes)
         commitRasterChange(newImage, resetVectors: true)
 
@@ -2328,8 +2324,12 @@ class CanvasView: NSView {
         initializeCanvasIfNeeded()
         canvasImage?.lockFocus()
         NSColor.white.set()
-        let rect = NSRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)
-        NSBezierPath(rect: rect).fill()
+
+        // ✅ convert to image space
+        let rCanvas = NSRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)
+        let rImg = imgRect(rCanvas)
+        NSBezierPath(rect: rImg).fill()
+
         canvasImage?.unlockFocus()
     }
     
@@ -2934,7 +2934,155 @@ class CanvasView: NSView {
         // ✅ Bake it in & drop vector cache so floodFill/eyedropper can't resurrect old geometry
         commitRasterChange(base, resetVectors: true)
     }
+    
+    // MARK: - Snapshot (1x, image-space only)
 
+    /// Returns a bitmap rep that is exactly the pixel size of `canvasImage`,
+    /// with 1pt == 1px and no gutter/zoom. Safely unwraps optional `canvasImage`.
+    /// Also flattens any floating selection (selectedImage at selectedImageOrigin).
+    private func make1xBitmapFromCanvasImage() -> NSBitmapImageRep? {
+        guard let image = canvasImage else { return nil }
+
+        // Prefer the underlying bitmap's pixel size; fall back to image.size.
+        let pixelSize: (Int, Int)
+        if let srcRep = image.representations.compactMap({ $0 as? NSBitmapImageRep }).first {
+            pixelSize = (srcRep.pixelsWide, srcRep.pixelsHigh)
+        } else {
+            let pw = max(Int(image.size.width.rounded()), 0)
+            let ph = max(Int(image.size.height.rounded()), 0)
+            pixelSize = (pw, ph)
+        }
+
+        let pw = pixelSize.0
+        let ph = pixelSize.1
+        guard pw > 0, ph > 0 else { return nil }
+
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: pw,
+            pixelsHigh: ph,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else { return nil }
+
+        // Keep 1pt == 1px so AppKit won’t introduce Retina scale on export.
+        rep.size = NSSize(width: pw, height: ph)
+
+        NSGraphicsContext.saveGraphicsState()
+        if let ctx = NSGraphicsContext(bitmapImageRep: rep) {
+            NSGraphicsContext.current = ctx
+            let cg = ctx.cgContext
+            cg.interpolationQuality = .none
+
+            // Flip to image space (origin at bottom-left for CG).
+            cg.translateBy(x: 0, y: CGFloat(ph))
+            cg.scaleBy(x: 1, y: -1)
+
+            // Draw the base canvas pixels exactly once, no zoom, no gutter.
+            image.draw(
+                in: NSRect(x: 0, y: 0, width: CGFloat(pw), height: CGFloat(ph)),
+                from: .zero,
+                operation: .copy,
+                fraction: 1.0,
+                respectFlipped: false,
+                hints: [.interpolation: NSImageInterpolation.none]
+            )
+
+            // Flatten any floating selection into the export.
+            if let overlay = selectedImage, let origin = selectedImageOrigin {
+                let destInImage = imgPoint(origin) // convert from view/canvas to image space
+                let destRect = NSRect(origin: destInImage, size: overlay.size)
+                overlay.draw(
+                    in: destRect,
+                    from: .zero,
+                    operation: .sourceOver,
+                    fraction: 1.0,
+                    respectFlipped: false,
+                    hints: [.interpolation: NSImageInterpolation.none]
+                )
+            }
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        return rep
+    }
+    
+    /// PNG data for saving: 1× pixels, no gutter, no zoom. Flattens floating selection.
+    func pngData1x() -> Data? {
+        guard let rep = make1xBitmapFromCanvasImage() else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+
+    /// Convenience save that guarantees Finder's “Dimensions” match canvas pixels.
+    func savePNG1x(to url: URL) throws {
+        guard let data = pngData1x() else { return }
+        try data.write(to: url)
+    }
+    
+    // 1×, gutter-free, flattened PNG (includes floating selection if any)
+    func pngData1xFlattened() -> Data? {
+        // Logical canvas size (points == pixels here)
+        let size = canvasRect.size
+        let pw = Int(round(size.width))
+        let ph = Int(round(size.height))
+        guard pw > 0, ph > 0 else { return nil }
+
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: pw,
+            pixelsHigh: ph,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else { return nil }
+
+        // 1pt == 1px so no Retina upscaling
+        rep.size = NSSize(width: pw, height: ph)
+
+        NSGraphicsContext.saveGraphicsState()
+        if let ctx = NSGraphicsContext(bitmapImageRep: rep) {
+            NSGraphicsContext.current = ctx
+            NSGraphicsContext.current?.imageInterpolation = .none
+
+            // White background like classic Paint
+            NSColor.white.setFill()
+            NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
+
+            // Base pixels — draw image-space at 1×
+            if let base = canvasImage {
+                base.draw(in: NSRect(origin: .zero, size: size),
+                          from: NSRect(origin: .zero, size: base.size),
+                          operation: .copy,
+                          fraction: 1.0,
+                          respectFlipped: true,
+                          hints: [.interpolation: NSImageInterpolation.none])
+            }
+
+            // Floating selection (if present)
+            if let sel = selectedImage, let origin = selectedImageOrigin {
+                let dst = NSRect(origin: imgPoint(origin), size: sel.size) // convert to image space
+                sel.draw(in: dst,
+                         from: .zero,
+                         operation: .sourceOver,
+                         fraction: 1.0,
+                         respectFlipped: true,
+                         hints: [.interpolation: NSImageInterpolation.none])
+            }
+
+            ctx.flushGraphics()
+        }
+        NSGraphicsContext.restoreGraphicsState()
+
+        return rep.representation(using: .png, properties: [:])
+    }
     
     deinit {
         NotificationCenter.default.removeObserver(self, name: .colourPicked, object: nil)
@@ -3005,21 +3153,21 @@ extension NSImage {
         let newW = s.width + abs(ky) * s.height
         let newH = s.height + abs(kx) * s.width
         let outSize = NSSize(width: ceil(newW), height: ceil(newH))
-
+        
         let out = NSImage(size: outSize)
         out.lockFocus()
         let ctx = NSGraphicsContext.current!.cgContext
-
+        
         // Leave space for the shear so we don’t clip
         ctx.translateBy(x: (ky < 0 ? abs(ky) * s.height / 2 : 0),
                         y: (kx < 0 ? abs(kx) * s.width  / 2 : 0))
-
+        
         let t = CGAffineTransform(a: 1, b: ky, c: kx, d: 1, tx: 0, ty: 0)
         ctx.concatenate(t)
-
+        
         draw(in: NSRect(origin: .zero, size: s), from: .zero, operation: .sourceOver, fraction: 1.0)
         out.unlockFocus()
         return out
     }
-}
 
+}

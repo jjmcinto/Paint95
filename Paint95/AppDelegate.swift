@@ -1285,17 +1285,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         mainViewController()?.canvasView
     }
 
-    private func snapshotCanvas() -> NSImage? {
-        guard let canvas = canvasView() else { return nil }
-        let size = canvas.intrinsicContentSize == .zero ? canvas.bounds.size : canvas.intrinsicContentSize
-        let bounds = NSRect(origin: .zero, size: size)
-        guard let rep = canvas.bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
-        canvas.cacheDisplay(in: bounds, to: rep)
-        let image = NSImage(size: bounds.size)
-        image.addRepresentation(rep)
-        return image
-    }
-
     private func makeCommandEvent(char: String) -> NSEvent {
         return NSEvent.keyEvent(
             with: .keyDown,
@@ -1312,18 +1301,116 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     /// Extract the current selection as an image (selectedImage if present, else render selectionRect)
+    // Add this corrected version (converts rect to image space):
     private func currentSelectionImage(from canvas: CanvasView) -> NSImage? {
         if let img = canvas.selectedImage {
             return img
         }
         if let rect = canvas.selectionRect, let base = canvas.canvasImage {
+            // Convert selection from canvas/view space to image space
+            let imgRect = NSRect(
+                x: rect.origin.x - canvas.canvasRect.origin.x,
+                y: rect.origin.y - canvas.canvasRect.origin.y,
+                width: rect.size.width,
+                height: rect.size.height
+            )
             let image = NSImage(size: rect.size)
             image.lockFocus()
-            base.draw(at: .zero, from: rect, operation: .copy, fraction: 1.0)
+            base.draw(
+                in: NSRect(origin: .zero, size: rect.size),
+                from: imgRect,
+                operation: .copy,
+                fraction: 1.0,
+                respectFlipped: true,
+                hints: [.interpolation: NSImageInterpolation.none]
+            )
             image.unlockFocus()
             return image
         }
         return nil
+    }
+    
+    // 1×, gutter-free PNG data of the canvas (flattened if there’s a floating selection)
+    private func pngData1xFlattenedFromCanvas() -> Data? {
+        guard let canvas = canvasView() else { return nil }
+
+        // Build the flattened visual (base + floating selection), but DON'T write this image directly.
+        // We'll draw it into a 1× bitmap with a flipped CG context.
+        guard let flattened = canvas.snapshotImageForExport() else { return nil }
+
+        // Exact canvas pixel size (no gutter, no zoom)
+        let size = canvas.canvasRect.size
+        let pw = Int(round(size.width))
+        let ph = Int(round(size.height))
+        guard pw > 0, ph > 0 else { return nil }
+
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: pw,
+            pixelsHigh: ph,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else { return nil }
+
+        // Ensure Finder reads 1pt == 1px
+        rep.size = NSSize(width: pw, height: ph)
+
+        NSGraphicsContext.saveGraphicsState()
+        if let gctx = NSGraphicsContext(bitmapImageRep: rep) {
+            NSGraphicsContext.current = gctx
+
+            // Fill background first (unflipped is fine for a solid fill)
+            let cg = gctx.cgContext
+            cg.setFillColor(NSColor.white.cgColor)
+            cg.fill(CGRect(x: 0, y: 0, width: pw, height: ph))
+
+            // 🔄 Flip the Y-axis so drawing lands upright in the PNG
+            cg.translateBy(x: 0, y: CGFloat(ph))
+            cg.scaleBy(x: 1, y: -1)
+
+            // Now draw the flattened NSImage WITHOUT respecting flipped (we already flipped CG)
+            flattened.draw(
+                in: NSRect(x: 0, y: 0, width: CGFloat(pw), height: CGFloat(ph)),
+                from: NSRect(origin: .zero, size: flattened.size),
+                operation: .sourceOver,
+                fraction: 1.0,
+                respectFlipped: false,
+                hints: [.interpolation: NSImageInterpolation.none]
+            )
+
+            gctx.flushGraphics()
+        }
+        NSGraphicsContext.restoreGraphicsState()
+
+        return rep.representation(using: .png, properties: [:])
+    }
+
+    // Convenience snapshot that returns an NSImage at 1× canvas size (no gutter)
+    private func snapshotCanvas() -> NSImage? {
+        guard let canvas = canvasView() else { return nil }
+        // Reuse the same flattened drawing used for PNG, but keep NSImage return
+        guard let data = pngData1xFlattenedFromCanvas() else { return nil }
+        return NSImage(data: data)
+    }
+
+    // Optional: a helper you can call from your Export/Save menu action
+    @IBAction func exportPNG1x(_ sender: Any?) {
+        guard let data = pngData1xFlattenedFromCanvas() else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "Untitled.png"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try data.write(to: url)
+        } catch {
+            NSAlert(error: error).runModal()
+        }
     }
 
     // MARK: - Help menu
