@@ -344,6 +344,7 @@ class CanvasView: NSView {
     private var redoStack: [CanvasSnapshot] = []
     private let maxUndoSteps = 5
     private var cancelCurvePreview = false
+    private var selectionMoveUndoOpen = false
     
     // Scroll
     override var isOpaque: Bool { true }  // avoids transparent compositing
@@ -358,6 +359,16 @@ class CanvasView: NSView {
     private let resizeGutter: CGFloat = 8.0
     
     @objc dynamic var drawOpaque: Bool = true   // default ON like classic Paint
+    
+    // Add this override to close the "arrow-move gesture" when the key is released.
+    override func keyUp(with event: NSEvent) {
+        let key = event.keyCode
+        // Arrow keys: ← 123, → 124, ↓ 125, ↑ 126
+        if key == 123 || key == 124 || key == 125 || key == 126 {
+            selectionMoveUndoOpen = false
+        }
+        super.keyUp(with: event)
+    }
     
     func setActiveColour(_ colour: NSColor, for slot: ActiveColourSlot) {
         switch slot {
@@ -1111,6 +1122,7 @@ class CanvasView: NSView {
 
         if isDraggingSelection {
             isDraggingSelection = false
+            selectionMoveUndoOpen = false
             selectionDragStartPoint = nil
             selectionImageStartOrigin = nil
             return
@@ -1472,7 +1484,6 @@ class CanvasView: NSView {
               let origin = selectedImageOrigin
         else { return }
 
-        saveUndoState()
         let clearRect = NSRect(origin: origin, size: img.size)
 
         // Clear pixels on the canvas
@@ -2763,6 +2774,11 @@ class CanvasView: NSView {
         guard dx != 0 || dy != 0 else {
             emitStatusUpdate(cursor: mousePosition)
             return
+        }
+        
+        if !isPastingActive && !selectionMoveUndoOpen {
+            saveUndoState()
+            selectionMoveUndoOpen = true
         }
         
         // 1) If we’re nudging a pasted image, move the overlay AND the visible selection.
