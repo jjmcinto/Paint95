@@ -320,6 +320,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         DispatchQueue.main.async { [weak self] in
             self?.refreshBaselineSnapshot()
         }
+
+        // Observe canvas modifications to show the "edited" dot in titlebar
+        NotificationCenter.default.addObserver(self,
+                                               selector: #selector(handleCanvasModified(_:)),
+                                               name: .canvasDidModify,
+                                               object: nil)
+    }
+
+    @objc private func handleCanvasModified(_ note: Notification) {
+        window?.isDocumentEdited = true
     }
 
     // MARK: - Menu bar
@@ -1549,7 +1559,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             "Select — Rectangular selection; move/resize; cut/copy/paste.",
             "Spray — Airbrush effect.",
             "Eyedropper — Pick colour from canvas.",
-            "Zoom — Toggle a zoomed region."
+            "Zoom — Toggle a zoom box preview and magnified view."
         ].forEach { body.append(bullet($0)) }
         body.append(NSAttributedString(string: "\n", attributes: bodyAttrs))
 
@@ -1627,7 +1637,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             case "View Bitmap…": return "Inspect the raw bitmap."
 
             case "Flip/Rotate…": return "Flip or rotate the selection/canvas."
-            case "Stretch/Skew…": return "Scale or shear the selection/canvas."
+            case "Stretch/Skew…": return "Scale and shear the selection/canvas."
             case "Invert Colors": return "Invert pixel colours."
             case "Attributes…": return "View image properties."
             case "Clear Image": return "Erase the entire canvas."
@@ -1930,6 +1940,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // Update the baseline to "no unsaved changes"
     private func refreshBaselineSnapshot() {
         self.lastSavedSnapshot = currentCanvasSnapshotPNG()
+        self.window?.isDocumentEdited = false
     }
 
     // Returns true only if current canvas differs from the baseline

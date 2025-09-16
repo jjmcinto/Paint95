@@ -77,6 +77,10 @@ extension Notification.Name {
     static let toolChanged = Notification.Name("PaintToolChangedNotification")
 }
 
+extension Notification.Name {
+    static let canvasDidModify = Notification.Name("PaintCanvasDidModify")
+}
+
 extension CanvasView {
     /// Replace the backing raster and (optionally) clear any vector/path caches,
     /// so later tools (fill, pick colour) don't resurrect pre-transform pixels.
@@ -232,8 +236,9 @@ class CanvasView: NSView {
     var selectionDragStartPoint: NSPoint?
     var selectionImageStartOrigin: NSPoint?
     
-    // NEW: one-time clear tracking for current floating selection
+    // one-time clear tracking for current floating selection
     private var clearedOriginalAreaForCurrentSelection = false
+    private var lastPencilPixel: (x: Int, y: Int)?
 
     //canvas re-size
     enum ResizeHandle: Int {
@@ -359,6 +364,104 @@ class CanvasView: NSView {
     private let resizeGutter: CGFloat = 8.0
     
     @objc dynamic var drawOpaque: Bool = true   // default ON like classic Paint
+    
+    // MARK: - Pixel helpers (Pencil)
+    private func imagePixel(from viewPoint: NSPoint) -> (x: Int, y: Int)? {
+        // Convert from view → canvas coords (undo zoom if active)
+        let p = convertZoomedPointToCanvas(viewPoint)
+
+        // Map to *logical* pixel coords in canvas space (origin at bottom-left)
+        let ix = Int(floor(p.x - canvasRect.origin.x))
+        let iy = Int(floor(p.y - canvasRect.origin.y))
+
+        guard ix >= 0, iy >= 0,
+              ix < Int(canvasRect.width), iy < Int(canvasRect.height)
+        else { return nil }
+
+        return (ix, iy)
+    }
+    
+    private func mutateCanvasPixels(_ body: (_ ctx: CGContext, _ w: Int, _ h: Int) -> Void) {
+        guard let baseCG = canvasImage?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+        let w = baseCG.width, h = baseCG.height
+        guard let ctx = CGContext(
+            data: nil, width: w, height: h,
+            bitsPerComponent: 8, bytesPerRow: w * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return }
+
+        ctx.setAllowsAntialiasing(false)
+        ctx.setShouldAntialias(false)
+        ctx.interpolationQuality = .none
+        ctx.setBlendMode(.copy) // replace pixels, no blending
+
+        // Draw existing image, then let the caller paint pixels on top:
+        ctx.draw(baseCG, in: CGRect(x: 0, y: 0, width: w, height: h))
+        body(ctx, w, h)
+
+        if let newCG = ctx.makeImage() {
+            self.canvasImage = NSImage(cgImage: newCG, size: canvasImage?.size ?? .zero)
+            self.needsDisplay = true
+            NotificationCenter.default.post(name: .canvasDidModify, object: nil)
+        }
+    }
+
+    private func forEachPixelOnLine(from p0: (Int, Int), to p1: (Int, Int), visit: (Int, Int) -> Void) {
+        // Classic integer Bresenham (aliased; perfect for "Pencil")
+        var (x0, y0) = p0
+        let (x1, y1) = p1
+        let dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1
+        let dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1
+        var err = dx + dy
+        while true {
+            visit(x0, y0)
+            if x0 == x1 && y0 == y1 { break }
+            let e2 = 2 * err
+            if e2 >= dy { err += dy; x0 += sx }
+            if e2 <= dx { err += dx; y0 += sy }
+        }
+    }
+
+    private func drawPencilSegment(from a: (Int, Int), to b: (Int, Int), color: NSColor) {
+        guard let baseCG = canvasImage?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+
+        // Physical bitmap size (device pixels)
+        let pw = baseCG.width
+        let ph = baseCG.height
+
+        // Logical canvas size (points == logical pixels)
+        let lw = max(1.0, canvasRect.width)
+        let lh = max(1.0, canvasRect.height)
+
+        // How many physical pixels per logical pixel (≈2.0 on Retina)
+        let sx = CGFloat(pw) / lw
+        let sy = CGFloat(ph) / lh
+
+        // Precompute a minimum rectangle size to cover one logical pixel in the bitmap
+        let rw = max(1, Int(ceil(sx)))
+        let rh = max(1, Int(ceil(sy)))
+
+        let paint = (color.usingColorSpace(.deviceRGB) ?? color).cgColor
+
+        mutateCanvasPixels { ctx, _, _ in
+            ctx.setFillColor(paint)
+
+            // Bresenham over *logical* pixels, then scale each step into the bitmap
+            forEachPixelOnLine(from: a, to: b) { lx, ly in
+                // Convert logical (lx, ly) → physical bitmap coords
+                let px = Int(round((CGFloat(lx) + 0.0) * sx))
+                let py = Int(round((CGFloat(ly) + 0.0) * sy))
+
+                // Clamp so we never draw outside the bitmap
+                let cx = max(0, min(px, pw - rw))
+                let cy = max(0, min(py, ph - rh))
+
+                // Core Graphics origin is bottom-left; our logical coords match that here
+                ctx.fill(CGRect(x: cx, y: cy, width: rw, height: rh))
+            }
+        }
+    }
     
     // Add this override to close the "arrow-move gesture" when the key is released.
     override func keyUp(with event: NSEvent) {
@@ -708,6 +811,19 @@ class CanvasView: NSView {
 
     
     override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+
+        // === Pixel-perfect paths (no blending) for Pencil & Eraser ===
+        if currentTool == .pencil || currentTool == .eraser {
+            saveUndoState()
+            if let px = imagePixel(from: p) {
+                lastPencilPixel = px
+                let colour: NSColor = (currentTool == .eraser) ? .white : primaryColour
+                drawPencilSegment(from: px, to: px, color: colour) // single pixel
+            }
+            return
+        }
+
         zoomPreviewRect = nil
         if let tv = textView {
             if tv.window?.firstResponder == tv {
@@ -718,11 +834,11 @@ class CanvasView: NSView {
                 textView = nil
             }
         }
-        
+
         let viewPt = convert(event.locationInWindow, from: nil)
         let point = convertZoomedPointToCanvas(viewPt)
         emitStatusUpdate(cursor: point)
-        
+
         // Selection resize handles
         if let rect = selectionRect ?? (selectedImage != nil ? NSRect(origin: selectedImageOrigin ?? .zero, size: selectedImage!.size) : nil) {
             for (i, handle) in selectionHandlePositions(rect: rect).enumerated() {
@@ -740,7 +856,7 @@ class CanvasView: NSView {
 
         // Points in both spaces
         let canvasPt = convertZoomedPointToCanvas(viewPt)
-        
+
         // === Canvas border/corner detection (zoom- & gutter-safe) ===
         if let h = resizeHandle(at: point, generous: true) {
             saveUndoState()
@@ -789,33 +905,33 @@ class CanvasView: NSView {
                 selectedImage = nil
                 window?.makeFirstResponder(self)
             }
-            
+
         case .spray:
             saveUndoState()  // ✅ one snapshot for the whole spray action
             currentSprayPoint = convertZoomedPointToCanvas(viewPt)
             startSpray()
-            
+
         case .text:
             startPoint = point
             isCreatingText = true
-            
+
         case .eyeDropper:
             if let picked = pickColour(at: point) {
                 currentColour = picked
                 NotificationCenter.default.post(name: .colourPicked, object: picked)
                 colourFromSelectionWindow = false
             }
-            
-        case .pencil, .brush, .eraser:
+
+        case .brush:
             saveUndoState()
             startPoint = point
             currentPath = NSBezierPath()
             currentPath?.move(to: point)
-            
+
         case .fill:
             saveUndoState()
             floodFill(from: point, with: currentColour)
-            
+
         case .curve:
             if curvePhase == 0 {
                 saveUndoState()
@@ -825,16 +941,16 @@ class CanvasView: NSView {
                 endPoint   = point
 
                 // Controls start at the endpoints → no bend until user moves them
-                control1   = point   // equals start
-                control2   = point   // will mirror in phase 1, or become end in phase 2
+                control1   = point
+                control2   = point
             }
-            
+
         case .line, .rect, .roundRect, .ellipse:
             saveUndoState()
             startPoint = point
             endPoint = point
             isDrawingShape = true
-            
+
         case .zoom:
             // If this click is on/near a border or corner, treat it as a resize instead of toggling zoom.
             if let h = resizeHandle(at: point, generous: true) {
@@ -848,13 +964,13 @@ class CanvasView: NSView {
             }
 
             if isZoomed {
-                // === Exit zoom (be defensive about scroll/clip state) ===
+                // === Exit zoom
                 isZoomed = false
                 zoomScale = 1.0
                 zoomPreviewRect = nil
 
-                updateZoomDocumentSize()        // resets documentView size back to canvasRect.size
-                constrainClipViewBoundsNow()    // clamp any weird clip origins AppKit might hold
+                updateZoomDocumentSize()
+                constrainClipViewBoundsNow()
                 needsDisplay = true
 
             } else {
@@ -885,6 +1001,8 @@ class CanvasView: NSView {
                 needsDisplay = true
             }
 
+        default:
+            break
         }
 
         window?.invalidateCursorRects(for: self)
@@ -895,6 +1013,18 @@ class CanvasView: NSView {
         let point  = convertZoomedPointToCanvas(viewPt)
         let shiftPressed = event.modifierFlags.contains(.shift)
         emitStatusUpdate(cursor: point)
+
+        // === Pixel-perfect paths for Pencil & Eraser ===
+        let p = convert(event.locationInWindow, from: nil)
+        if currentTool == .pencil || currentTool == .eraser {
+            guard let prev = lastPencilPixel, let cur = imagePixel(from: p) else { return }
+            if prev != cur {
+                let colour: NSColor = (currentTool == .eraser) ? .white : primaryColour
+                drawPencilSegment(from: prev, to: cur, color: colour)
+                lastPencilPixel = cur
+            }
+            return
+        }
 
         // Selection resizing (unchanged)
         if isResizingSelection, let handle = activeSelectionHandle {
@@ -999,7 +1129,7 @@ class CanvasView: NSView {
             return
         }
 
-        // Tools (unchanged behaviour)
+        // Tools (unchanged behaviour for non-pixel tools)
         switch currentTool {
         case .select:
             if !isPastingImage {
@@ -1014,11 +1144,7 @@ class CanvasView: NSView {
                 textBoxRect = rectBetween(startPoint, and: point)
                 needsDisplay = true
             }
-        case .pencil, .brush:
-            currentPath?.line(to: point)
-            drawCurrentPathToCanvas()
-            currentPath = NSBezierPath(); currentPath?.move(to: point)
-        case .eraser:
+        case .brush:
             currentPath?.line(to: point)
             drawCurrentPathToCanvas()
             currentPath = NSBezierPath(); currentPath?.move(to: point)
@@ -1056,6 +1182,12 @@ class CanvasView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        // End pixel-perfect strokes
+        if currentTool == .pencil || currentTool == .eraser {
+            lastPencilPixel = nil
+            return
+        }
+
         if currentTool != .zoom { zoomPreviewRect = nil }
 
         if isResizingCanvas {
@@ -1103,7 +1235,7 @@ class CanvasView: NSView {
                     self.scrollToVisibleSafe(target)
                 }
             }
-            
+
             needsDisplay = true
             return
         }
@@ -1173,7 +1305,7 @@ class CanvasView: NSView {
             clearedOriginalAreaForCurrentSelection = false
             window?.invalidateCursorRects(for: self)
             needsDisplay = true
-            
+
         case .spray:
             stopSpray()
 
@@ -1183,21 +1315,6 @@ class CanvasView: NSView {
                 textBoxRect = .zero
                 isCreatingText = false
             }
-
-        case .pencil:
-            if pointsAreEqual(startPoint, endPoint) {
-                initializeCanvasIfNeeded()
-                canvasImage?.lockFocus()
-                currentColour.set()
-
-                // ✅ convert to image space
-                let p = imgPoint(startPoint)
-                NSRect(x: p.x, y: p.y, width: 1, height: 1).fill()
-
-                canvasImage?.unlockFocus()
-                needsDisplay = true
-            }
-            currentPath = nil
 
         case .brush:
             if pointsAreEqual(startPoint, endPoint) {
@@ -1212,13 +1329,6 @@ class CanvasView: NSView {
                 NSBezierPath(ovalIn: rImg).fill()
 
                 canvasImage?.unlockFocus()
-                needsDisplay = true
-            }
-            currentPath = nil
-
-        case .eraser:
-            if pointsAreEqual(startPoint, endPoint) {
-                eraseDot(at: startPoint, radius: 7.5)
                 needsDisplay = true
             }
             currentPath = nil
@@ -1256,16 +1366,13 @@ class CanvasView: NSView {
             needsDisplay = true
 
         case .curve:
-            // mouseUp(with:), case .curve
             switch curvePhase {
             case 0:
                 curvePhase = 1
-
             case 1:
                 control1 = pt
                 control2 = control1
                 curvePhase = 2
-
             case 2:
                 control2 = pt
 
@@ -1298,6 +1405,7 @@ class CanvasView: NSView {
             default:
                 break
             }
+
         default:
             break
         }
@@ -1577,6 +1685,7 @@ class CanvasView: NSView {
 
         self.window?.makeFirstResponder(self)
         needsDisplay = true
+        NotificationCenter.default.post(name: .canvasDidModify, object: self)
     }
 
     func commitSelection() {
@@ -1686,13 +1795,13 @@ class CanvasView: NSView {
         needsDisplay = true
     }
     
-    // REPLACE saveUndoState() with this:
     private func saveUndoState() {
-        // snapshot even if image is nil (e.g., clearing/new doc) so size is tracked too
         let snap = CanvasSnapshot(image: canvasImage?.copy() as? NSImage, rect: canvasRect)
         if undoStack.count >= maxUndoSteps { undoStack.removeFirst() }
         undoStack.append(snap)
         redoStack.removeAll()
+        
+        NotificationCenter.default.post(name: .canvasDidModify, object: self)
     }
 
     // REPLACE undo() with this:
@@ -1995,7 +2104,7 @@ class CanvasView: NSView {
     private func drawCurrentPathToCanvas() {
         guard let path = currentPath else { return }
         initializeCanvasIfNeeded()
-        
+
         // Prepare a translated copy of the path
         let translatedPath = path.copy() as! NSBezierPath
         let transform = AffineTransform(translationByX: -canvasRect.origin.x, byY: -canvasRect.origin.y)
@@ -2003,20 +2112,15 @@ class CanvasView: NSView {
 
         translatedPath.lineCapStyle = .butt
         translatedPath.lineJoinStyle = .miter
-        
+
+        // Pencil & Eraser are handled by the pixel-perfect pipeline and should NOT route here.
         var strokeColour: NSColor
         var lineWidth: CGFloat
 
         switch currentTool {
-        case .pencil:
-            strokeColour = currentColour
-            lineWidth = 1
         case .brush:
             strokeColour = currentColour
             lineWidth = toolSize
-        case .eraser:
-            strokeColour = .white
-            lineWidth = toolSize * 3
         default:
             return
         }
