@@ -17,11 +17,11 @@
                                 <rect key="frame" x="100" y="54" width="800" height="668"/>
                                 <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
                             </customView>
-                            <customView fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="Ttc-D5-FGE" customClass="ToolbarView" customModule="Paint95">
+                            <customView identifier="ToolBox" fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="Ttc-D5-FGE" customClass="ToolbarView" customModule="Paint95">
                                 <rect key="frame" x="0.0" y="54" width="100" height="280"/>
                                 <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
                             </customView>
-                            <customView fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="Quk-ip-mAh" customClass="ColourPaletteView" customModule="Paint95" customModuleProvider="target">
+                            <customView identifier="ColourBox" fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="Quk-ip-mAh" customClass="ColourPaletteView" customModule="Paint95" customModuleProvider="target">
                                 <rect key="frame" x="100" y="4" width="350" height="50"/>
                                 <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
                             </customView>

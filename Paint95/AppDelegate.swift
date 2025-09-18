@@ -1,5 +1,16 @@
 // AppDelegate.swift
 import Cocoa
+import UniformTypeIdentifiers
+
+var activeCanvasView: CanvasView? {
+    if let key = NSApp.keyWindow,
+       let cv = key.contentView?.firstSubview(of: CanvasView.self) { return cv }
+    // Fallback: search all windows
+    for w in NSApp.windows {
+        if let cv = w.contentView?.firstSubview(of: CanvasView.self) { return cv }
+    }
+    return nil
+}
 
 private extension NSView {
     var descendants: [NSView] {
@@ -254,6 +265,7 @@ final class StretchSkewSheetController: NSWindowController, NSTextFieldDelegate 
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
+    private var bitmapPreviewWindows: [BitmapPreviewWindowController] = []
     private weak var activeSaveAsPanel: NSSavePanel?
     private var lastSavedSnapshot: Data?
     var window: NSWindow?
@@ -269,6 +281,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var saveAsFormatPopup: NSPopUpButton?
     private var lastSaveFormat: SaveFormat = .png
 
+    @objc func fileViewBitmap(_ sender: Any?) {
+        // Use the same upright 1× pipeline you use for saving/export
+        guard let image = snapshotCanvas() else { return }
+
+        let wc = BitmapPreviewWindowController(image: image)
+        wc.onClose = { [weak self, weak wc] in
+            guard let wc = wc else { return }
+            self?.bitmapPreviewWindows.removeAll { $0 === wc }
+        }
+
+        bitmapPreviewWindows.append(wc)
+        wc.showWindow(nil)
+        wc.window?.center()
+        wc.window?.makeKeyAndOrderFront(nil)
+    }
+    
     // MARK: - App lifecycle
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -626,33 +654,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func viewBitmap(_ sender: Any?) {
-        guard let image = snapshotCanvas() else { return }
-
-        let imageView = NSImageView()
-        imageView.image = image
-        imageView.imageScaling = .scaleNone
-        imageView.translatesAutoresizingMaskIntoConstraints = true
-        imageView.frame = NSRect(origin: .zero, size: image.size)
-
-        let sv = NSScrollView()
-        sv.hasVerticalScroller = true
-        sv.hasHorizontalScroller = true
-        sv.borderType = .bezelBorder
-        sv.documentView = imageView
-        sv.allowsMagnification = true
-        sv.minMagnification = 0.25
-        sv.maxMagnification = 8.0
-
-        let w = NSWindow(
-            contentRect: NSRect(x: 340, y: 340, width: 800, height: 600),
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
-            backing: .buffered, defer: false
-        )
-        w.title = "Bitmap (1:1)"
-        w.contentView = sv
-        w.center()
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        // Route to the retained, crash-safe implementation
+        fileViewBitmap(sender)
     }
 
     // MARK: - Image menu actions
@@ -739,88 +742,100 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// Copy To… — Save the current selection to a file (does not modify the canvas)
     @objc func editCopyTo(_ sender: Any?) {
-        guard let canvas = findCanvasView() else { return }
-
-        // Build an image from the current selection (prefer existing selectedImage)
-        guard let selectionImage = currentSelectionImage(from: canvas) else {
-            NSSound.beep()
-            print("Copy To…: no selection.")
+        // Get the active canvas (works even if you have multiple windows)
+        guard let cv = activeCanvasView else {
+            showNoSelectionAlert()
+            return
+        }
+        // Make sure there is a selection; if not, guide the user.
+        guard cv.hasActiveSelection else {
+            showNoSelectionAlert()
             return
         }
 
-        // Choose a folder, then prompt for file name
-        let panel = NSOpenPanel()
-        panel.title = "Choose a Folder"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
-        guard panel.runModal() == .OK, let dir = panel.url else { return }
+        // Extract the selected bitmap: prefer floating selection, otherwise crop from canvas
+        let selectionImage: NSImage? = {
+            if let floating = cv.selectedImage {
+                return floating
+            }
+            if let rect = cv.selectionRect, let base = cv.canvasImage {
+                // Convert selection (view/canvas space) → image space
+                let src = NSRect(
+                    x: rect.origin.x - cv.canvasRect.origin.x,
+                    y: rect.origin.y - cv.canvasRect.origin.y,
+                    width: rect.size.width,
+                    height: rect.size.height
+                )
+                let out = NSImage(size: rect.size)
+                out.lockFocus()
+                base.draw(in: NSRect(origin: .zero, size: rect.size),
+                          from: src,
+                          operation: .copy,
+                          fraction: 1.0,
+                          respectFlipped: true,
+                          hints: [.interpolation: NSImageInterpolation.none])
+                out.unlockFocus()
+                return out
+            }
+            return nil
+        }()
 
-        let suggested = "Selection.png"
-        let alert = NSAlert()
-        alert.messageText = "Copy To…"
-        alert.informativeText = "Enter a file name for the selection:"
-        let nameField = NSTextField(string: suggested)
-        nameField.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
-        alert.accessoryView = nameField
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        var filename = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if filename.isEmpty { filename = suggested }
-        if (filename as NSString).pathExtension.isEmpty { filename += ".png" }
-        let url = dir.appendingPathComponent(filename)
-
-        if FileManager.default.fileExists(atPath: url.path) {
-            let ow = NSAlert()
-            ow.messageText = "Replace existing file?"
-            ow.informativeText = "A file named “\(filename)” already exists in this location."
-            ow.alertStyle = .warning
-            ow.addButton(withTitle: "Replace")
-            ow.addButton(withTitle: "Cancel")
-            guard ow.runModal() == .alertFirstButtonReturn else { return }
-        }
-
-        // Encode (default PNG)
-        guard
-            let tiff = selectionImage.tiffRepresentation,
-            let rep  = NSBitmapImageRep(data: tiff),
-            let data = rep.representation(using: .png, properties: [:])
-        else {
-            NSSound.beep()
-            print("Copy To…: failed to encode selection.")
+        guard let image = selectionImage,
+              let tiff = image.tiffRepresentation,
+              let rep  = NSBitmapImageRep(data: tiff),
+              let png  = rep.representation(using: .png, properties: [:]) else {
+            showNoSelectionAlert()
             return
         }
-        do {
-            try data.write(to: url)
-            print("Copy To…: saved selection to \(url.path)")
-        } catch {
-            NSSound.beep()
-            print("Copy To…: save error \(error)")
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "Selection.png"
+        panel.title = "Save Selection"
+
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try png.write(to: url)
+            } catch {
+                let alert = NSAlert(error: error)
+                alert.messageText = "Couldn’t save selection"
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+            }
         }
     }
 
     /// Paste From… — Choose an image file and paste it as a floating selection
+    // AppDelegate.swift
     @objc func editPasteFrom(_ sender: Any?) {
-        guard let canvas = findCanvasView() else { return }
-
         let panel = NSOpenPanel()
-        panel.title = "Paste From…"
-        panel.allowedFileTypes = ["png","jpg","jpeg","bmp","tiff","gif","heic"]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
+        panel.title = "Paste From…"
 
-        panel.begin { response in
-            guard response == .OK, let url = panel.url, let image = NSImage(contentsOf: url) else { return }
+        if #available(macOS 11.0, *) {
+            var types: [UTType] = [.png, .jpeg, .tiff, .gif, .bmp]
+            if let heic = UTType("public.heic") { types.append(heic) }
+            if let jp2  = UTType("public.jpeg-2000") { types.append(jp2) } // replaces .jpeg2000
+            panel.allowedContentTypes = types
+        } else {
+            // Older macOS: fall back to filename extensions
+            panel.allowedFileTypes = ["png","jpg","jpeg","tif","tiff","gif","bmp","heic","jp2","jpx"]
+        }
 
-            // Put the image on the pasteboard, then reuse CanvasView.pasteImage()
-            let pb = NSPasteboard.general
-            pb.clearContents()
-            pb.writeObjects([image])
-
-            canvas.pasteImage()
+        panel.begin { [weak self] resp in
+            guard resp == .OK, let url = panel.url else { return }
+            guard let img = NSImage(contentsOf: url) else {
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "Can’t open image"
+                alert.informativeText = "The selected file isn’t a supported image."
+                alert.runModal()
+                return
+            }
+            self?.activeCanvasView?.pasteExternalImage(img)
         }
     }
 
@@ -1182,12 +1197,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func setDesktopWallpaper(mode: WallpaperMode) {
         guard let source = snapshotCanvas() else { return }
+
+        // Keep wallpapers in a dedicated temp subfolder
+        let fm = FileManager.default
+        let baseDir = fm.temporaryDirectory.appendingPathComponent("Paint95Wallpapers", isDirectory: true)
+        try? fm.createDirectory(at: baseDir, withIntermediateDirectories: true)
+
         for (idx, screen) in NSScreen.screens.enumerated() {
             let screenSize = screen.frame.size
+
+            // Render per-screen image (tiled or centered)
             let rendered: NSImage = {
                 switch mode {
-                case .tiled:   return imageForScreenTiled(source: source, screenSize: screenSize)
-                case .centered:return imageForScreenCentered(source: source, screenSize: screenSize)
+                case .tiled:    return imageForScreenTiled(source: source, screenSize: screenSize)
+                case .centered: return imageForScreenCentered(source: source, screenSize: screenSize)
                 }
             }()
 
@@ -1197,16 +1220,36 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 let data = rep.representation(using: .png, properties: [:])
             else { continue }
 
-            let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("paint95-wallpaper-\(idx).png")
-            do { try data.write(to: tempURL) } catch { continue }
+            // ✅ Use a UNIQUE file URL every time so the Dock doesn't cache/ignore it
+            let filename = "paint95-wallpaper-\(idx)-\(UUID().uuidString).png"
+            let tempURL = baseDir.appendingPathComponent(filename)
 
+            do { try data.write(to: tempURL, options: .atomic) } catch { continue }
+
+            // We pre-render the exact pixels; ask macOS not to rescale.
             let options: [NSWorkspace.DesktopImageOptionKey: Any] = [
                 .imageScaling: NSNumber(value: NSImageScaling.scaleNone.rawValue),
                 .allowClipping: true
             ]
 
-            try? NSWorkspace.shared.setDesktopImageURL(tempURL, for: screen, options: options)
+            do {
+                try NSWorkspace.shared.setDesktopImageURL(tempURL, for: screen, options: options)
+            } catch {
+                // Non-fatal; continue with other screens
+                NSLog("Set wallpaper failed for screen \(idx): \(error)")
+            }
+        }
+
+        // (Optional) Light cleanup: keep the last ~30 files so /tmp doesn't grow forever
+        if let urls = try? fm.contentsOfDirectory(at: baseDir, includingPropertiesForKeys: [.creationDateKey], options: [.skipsHiddenFiles]) {
+            let sorted = urls.sorted {
+                (try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate ?? .distantPast) ??
+                .distantPast >
+                ((try? $1.resourceValues(forKeys: [.creationDateKey]).creationDate ?? .distantPast) ?? .distantPast)
+            }
+            if sorted.count > 30 {
+                for url in sorted.dropFirst(30) { try? fm.removeItem(at: url) }
+            }
         }
     }
 
@@ -2077,6 +2120,42 @@ private enum SaveFormat: CaseIterable, Equatable {
         }
     }
 }
+
+private extension NSView {
+    func firstSubview<T: NSView>(of type: T.Type) -> T? {
+        if let v = self as? T { return v }
+        for s in subviews {
+            if let found: T = s.firstSubview(of: type) { return found }
+        }
+        return nil
+    }
+}
+
+extension AppDelegate {
+    var activeCanvasView: CanvasView? {
+        if let key = NSApp.keyWindow,
+           let cv = key.contentView?.firstSubview(of: CanvasView.self) {
+            return cv
+        }
+        // Fallback: search all windows
+        for w in NSApp.windows {
+            if let cv = w.contentView?.firstSubview(of: CanvasView.self) {
+                return cv
+            }
+        }
+        return nil
+    }
+}
+
+private func showNoSelectionAlert() {
+    let alert = NSAlert()
+    alert.alertStyle = .informational
+    alert.messageText = "No selection to save"
+    alert.informativeText = "Use the Select tool to draw a rectangle around what you want to save, then choose “Copy To…” again."
+    alert.addButton(withTitle: "OK")
+    alert.runModal()
+}
+
 
 private extension AppDelegate {
     func enforceSelectedExtension(on panel: NSSavePanel, selected: SaveFormat) -> URL {

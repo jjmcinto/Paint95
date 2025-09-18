@@ -53,6 +53,13 @@ extension NSCursor {
     }()
 }
 
+extension CanvasView {
+    /// True when there is either a floating bitmap or a marquee selection.
+    var hasActiveSelection: Bool {
+        return selectedImage != nil || (selectionRect?.isEmpty == false)
+    }
+}
+
 // MARK: - Export snapshot (flattens any floating selection) at 1×, no gutters/zoom
 extension CanvasView {
     /// Returns a flattened image of the canvas at **1× pixel resolution**, including any floating selection.
@@ -1645,8 +1652,22 @@ class CanvasView: NSView {
         isCutSelection = false
     }
 
+    // New: entry point used by AppDelegate’s “Paste From…”
+    func pasteExternalImage(_ image: NSImage) {
+        // Optionally apply colour-key transparency when Draw Opaque is OFF
+        var img = image
+        if !drawOpaque {
+            let key = NSColor.white
+            if let keyed = imageByMakingColorTransparent(img, key: key, tolerance: 0.02) {
+                img = keyed
+            }
+        }
+        startPasteOverlay(using: img, origin: NSPoint(x: 100, y: 100))
+    }
+
+    // Updated: clipboard paste now reuses the same overlay code
     func pasteImage() {
-        let pasteboard = NSPasteboard.general
+        let pb = NSPasteboard.general
 
         // If something is already being pasted, commit it first
         if isPastingImage {
@@ -1655,35 +1676,33 @@ class CanvasView: NSView {
             pastedImage = nil
             pastedImageOrigin = nil
         }
-        
-        // If a floating selection is active, commit it to the canvas
-        // before pasting a copy from the pasteboard.
+        // If a floating selection is active, commit it before pasting
         if selectedImage != nil, selectedImageOrigin != nil {
             commitSelection()
         }
 
         guard
-            let images = pasteboard.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage],
+            let images = pb.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage],
             var img = images.first
         else { return }
 
-        // ── NEW: apply color-key transparency if Draw Opaque is OFF ───────────────
         if !drawOpaque {
-            // Use your app's background/secondary colour here if you track one:
-            let keyColour = NSColor.white
-            if let keyed = imageByMakingColorTransparent(img, key: keyColour, tolerance: 0.02) {
+            let key = NSColor.white
+            if let keyed = imageByMakingColorTransparent(img, key: key, tolerance: 0.02) {
                 img = keyed
             }
         }
-        // ─────────────────────────────────────────────────────────────────────────
+        startPasteOverlay(using: img, origin: NSPoint(x: 100, y: 100))
+    }
 
+    // Shared: starts the overlay without ever drawing borders into the bitmap
+    private func startPasteOverlay(using img: NSImage, origin: NSPoint) {
         // Clear any old selection state
         selectionRect = nil
         selectedImage = nil
         selectedImageOrigin = nil
 
         // Start Paste Mode (overlay)
-        let origin = NSPoint(x: 100, y: 100)
         pastedImage = img
         pastedImageOrigin = origin
         isPastingImage = true
@@ -1695,13 +1714,7 @@ class CanvasView: NSView {
         selectedImageOrigin = origin
         selectionRect = NSRect(origin: origin, size: img.size)
 
-        // Overlay should never pre-clear underneath; reset one-time flag
-        clearedOriginalAreaForCurrentSelection = false
-
-        // Scroll to show pasted content
-        if let clipView = superview as? NSClipView {
-            clipView.scrollToVisible(NSRect(origin: origin, size: img.size))
-        }
+        // The dashed selection marquee is UI-only; no border is ever burned into pixels.
 
         // Ensure the canvas is large enough to show it; grow if needed.
         let requiredWidth  = max(canvasRect.width,  origin.x + img.size.width)
@@ -1710,11 +1723,16 @@ class CanvasView: NSView {
             updateCanvasSize(to: NSSize(width: requiredWidth, height: requiredHeight))
         }
 
+        // Scroll to show pasted content
+        if let clipView = superview as? NSClipView {
+            clipView.scrollToVisible(NSRect(origin: origin, size: img.size))
+        }
+
         // Ensure the selection tool is active so move/resize works
         currentTool = .select
         NotificationCenter.default.post(name: .toolChanged, object: PaintTool.select)
 
-        self.window?.makeFirstResponder(self)
+        window?.makeFirstResponder(self)
         needsDisplay = true
         NotificationCenter.default.post(name: .canvasDidModify, object: self)
     }
