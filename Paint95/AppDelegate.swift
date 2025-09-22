@@ -565,9 +565,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         addEdit("Copy To…",         #selector(editCopyTo(_:)))
         addEdit("Paste From…",      #selector(editPasteFrom(_:)))
 
+        /*
         // Strip automatic Dictation / Emoji / Substitutions etc.
         stripAutomaticEditExtras(from: editMenu)
 
+        // Keep it clean if AppKit reinjects later (may happen after NSApp.mainMenu is set)
+        NotificationCenter.default.addObserver(self,
+            selector: #selector(handleEditMenuChanged(_:)),
+            name: NSMenu.didAddItemNotification, object: editMenu)
+        NotificationCenter.default.addObserver(self,
+            selector: #selector(handleEditMenuChanged(_:)),
+            name: NSMenu.didChangeItemNotification, object: editMenu)
+
+        // One more sweep on the next runloop, after the menu bar goes live
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.stripAutomaticEditExtras(from: editMenu)
+        }
+        */
+        
+        // ✅ Defer stripping until AFTER AppKit finishes customizing the main menu.
+        // First pass: next runloop. Second pass: a moment later (covers late injectors).
+        DispatchQueue.main.async { [weak self, weak editMenu] in
+            guard let self, let menu = editMenu else { return }
+            self.stripAutomaticEditExtras(from: menu)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self, weak editMenu] in
+                guard let self, let menu = editMenu else { return }
+                self.stripAutomaticEditExtras(from: menu)
+            }
+        }
+        
         editItem.submenu = editMenu
         main.addItem(editItem)
 
@@ -1002,32 +1030,44 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         canvas.setCanvasSizeAnchoredTopLeft(to: NSSize(width: w, height: h))
     }
 
-    /// Remove “Start Dictation…”, “Emoji & Symbols”, and various automatic text-service groups
+    /// Remove AppKit's automatic Edit menu extras (case/ellipsis-insensitive),
+    /// and also strip whole submenus like Substitutions/Transformations/Speech/AutoFill.
     private func stripAutomaticEditExtras(from menu: NSMenu) {
-        let forbiddenSelectors: Set<Selector> = [
-            #selector(NSApplication.orderFrontCharacterPalette(_:))
-        ]
+        func norm(_ s: String) -> String {
+            return s
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "...", with: "…") // unify 3 dots → ellipsis
+                .lowercased()
+        }
+
+        // Titles to remove (normalized to lowercase + ellipsis form)
         let forbiddenTitles = Set([
-            "Start Dictation…",
-            "Emoji & Symbols",
-            "Emoji & Symbols…",
-            "Substitutions",
-            "Transformations",
-            "Speech",
-            "Text Replacement",
-            "AutoFill"
+            "start dictation…",
+            "emoji & symbols",
+            "autofill",              // some macOS versions title-case as “AutoFill”
+            "substitutions",
+            "transformations",
+            "speech",
+            "text replacement"
         ])
 
+        // Walk backwards so indices stay valid while removing
         for item in menu.items.reversed() {
-            if let action = item.action, forbiddenSelectors.contains(action) {
+            // Remove by selector (Emoji & Symbols)
+            if let action = item.action,
+               action == #selector(NSApplication.orderFrontCharacterPalette(_:)) {
                 menu.removeItem(item)
                 continue
             }
-            if forbiddenTitles.contains(item.title) {
+
+            // Remove by item title
+            if forbiddenTitles.contains(norm(item.title)) {
                 menu.removeItem(item)
                 continue
             }
-            if let submenu = item.submenu, forbiddenTitles.contains(submenu.title) {
+
+            // Remove entire submenu if its title matches (e.g., Substitutions / Transformations / Speech / AutoFill)
+            if let sub = item.submenu, forbiddenTitles.contains(norm(sub.title)) {
                 menu.removeItem(item)
             }
         }
