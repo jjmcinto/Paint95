@@ -346,6 +346,13 @@ class ViewController: NSViewController, ToolbarDelegate, ColourPaletteDelegate, 
         colourSwatchView.colour = canvasView.currentColour
         colourSwatchView.onClick = { [weak self] in self?.presentColourSelection() }
         
+        // Default tool on first load: Pencil
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.canvasView.currentTool = .pencil
+            NotificationCenter.default.post(name: .toolChanged, object: PaintTool.pencil)
+        }
+        
         // Keyboard routing
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self else { return event }
