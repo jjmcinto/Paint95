@@ -2594,35 +2594,26 @@ class CanvasView: NSView {
         return NSPoint(x: point.x / zoomScale, y: point.y / zoomScale)
     }
     
+    // CanvasView.swift
     func clearCanvas() {
-        // Save what we had so Undo returns to the previous document
+        // 1) Save current state so ⌘Z can restore it
         saveUndoState()
 
-        // Reset transient state
-        drawnPaths.removeAll()
-        selectionRect = nil
-        selectedImage = nil
-        selectedImageOrigin = nil
-        isPastingImage = false
-        isPastingActive = false
-        pastedImage = nil
-        pastedImageOrigin = nil
-        textView?.removeFromSuperview()
-        textView = nil
+        // 2) Replace pixels with white at current canvas size
+        let s = canvasRect.size
+        guard s.width > 0, s.height > 0 else { return }
 
-        // Create a fresh white bitmap the same size as the current canvas
-        let size = canvasRect.size
-        let img = NSImage(size: size)
+        let img = NSImage(size: s)
         img.lockFocus()
         NSColor.white.setFill()
-        NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: s)).fill()
         img.unlockFocus()
 
-        // Keep view/layout in sync and show it immediately
         canvasImage = img
-        updateCanvasSize(to: size)     // ensures frame/insets/gutters are correct
-        window?.makeFirstResponder(self)
         needsDisplay = true
+
+        // 3) Let the rest of the app know we mutated pixels
+        NotificationCenter.default.post(name: .canvasDidModify, object: nil)
     }
     
     private func initializeCanvasIfNeeded() {

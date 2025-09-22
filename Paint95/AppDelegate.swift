@@ -12,6 +12,12 @@ var activeCanvasView: CanvasView? {
     return nil
 }
 
+private extension NSWindow {
+    var isPalette: Bool {
+        ((self as? NSPanel)?.isFloatingPanel == true) || level == .floating
+    }
+}
+
 private extension NSView {
     var descendants: [NSView] {
         subviews.flatMap { [$0] + $0.descendants }
@@ -281,6 +287,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var saveAsFormatPopup: NSPopUpButton?
     private var lastSaveFormat: SaveFormat = .png
 
+    // --- Status Bar (NSStatusItem) ---
+    private var statusItem: NSStatusItem?
+
     @objc func fileViewBitmap(_ sender: Any?) {
         // Use the same upright 1× pipeline you use for saving/export
         guard let image = snapshotCanvas() else { return }
@@ -354,6 +363,108 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                                selector: #selector(handleCanvasModified(_:)),
                                                name: .canvasDidModify,
                                                object: nil)
+        
+        // Floating palettes: make them follow full screen & clamp to visible area
+        prepareFloatingPalettesForFullScreen()
+        reclampFloatingPalettes()
+
+        let nc = NotificationCenter.default
+        // Host window transitions
+        nc.addObserver(self, selector: #selector(reclampFloatingPalettes), name: NSWindow.didEnterFullScreenNotification, object: nil)
+        nc.addObserver(self, selector: #selector(reclampFloatingPalettes), name: NSWindow.didExitFullScreenNotification, object: nil)
+        nc.addObserver(self, selector: #selector(reclampFloatingPalettes), name: NSWindow.didResizeNotification, object: nil)
+        nc.addObserver(self, selector: #selector(reclampFloatingPalettes), name: NSWindow.didMoveNotification, object: nil)
+        // Displays / resolution / menu bar & dock changes
+        nc.addObserver(self, selector: #selector(reclampFloatingPalettes), name: NSApplication.didChangeScreenParametersNotification, object: nil)
+
+        // ✅ Create crash-proof status bar item
+        setupStatusBar()
+    }
+
+    // MARK: - Status Bar (NSStatusItem)
+
+    private func setupStatusBar() {
+        // Remove any existing status item first (e.g., during hot reloads)
+        if let existing = statusItem {
+            NSStatusBar.system.removeStatusItem(existing)
+            statusItem = nil
+        }
+
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem = item
+
+        if let button = item.button {
+            if #available(macOS 11.0, *) {
+                button.image = NSImage(systemSymbolName: "paintbrush.fill",
+                                       accessibilityDescription: "Paint95")
+                button.image?.isTemplate = true
+            } else {
+                button.title = "Paint95"
+            }
+        }
+
+        item.menu = buildStatusMenu()
+    }
+
+    private func buildStatusMenu() -> NSMenu {
+        let menu = NSMenu()
+
+        let showItem = NSMenuItem(title: "Show Windows",
+                                  action: #selector(showAllWindows(_:)),
+                                  keyEquivalent: "")
+        showItem.target = self
+        menu.addItem(showItem)
+
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(title: "Quit Paint95",
+                                  action: #selector(quitApp(_:)),
+                                  keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        return menu
+    }
+
+    @objc private func showAllWindows(_ sender: Any?) {
+        NSApp.activate(ignoringOtherApps: true)
+        for w in NSApp.windows where !w.isMiniaturized {
+            w.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    @objc private func quitApp(_ sender: Any?) {
+        // Reuse existing "Exit" logic so unsaved-changes prompts still appear
+        fileExit(sender)
+    }
+
+    private func screenForClamping(host: NSWindow?) -> (rect: NSRect, isFull: Bool) {
+        let screen = host?.screen ?? NSScreen.main
+        let isFull = host?.styleMask.contains(.fullScreen) ?? false
+        // In full screen, use the whole screen frame; otherwise use visibleFrame so we avoid menu bar/dock.
+        let rect = (isFull ? screen?.frame : screen?.visibleFrame) ?? NSScreen.main!.visibleFrame
+        return (rect, isFull)
+    }
+
+    // Call this once at launch and anytime you create/show palette windows
+    private func prepareFloatingPalettesForFullScreen() {
+        for w in NSApp.windows where w.isPalette {
+            // Ensure palettes accompany the full-screen space and move with the active Space.
+            w.collectionBehavior.insert([.fullScreenAuxiliary, .moveToActiveSpace])
+        }
+    }
+
+    // Call this on every relevant transition (enter/exit full screen, resize, screen changes)
+    @objc private func reclampFloatingPalettes() {
+        let (clampRect, _) = screenForClamping(host: NSApp.keyWindow)
+        for w in NSApp.windows where w.isPalette && w.isVisible && !w.isMiniaturized {
+            var f = w.frame
+            if f.maxY > clampRect.maxY { f.origin.y = clampRect.maxY - f.height }
+            if f.minY < clampRect.minY { f.origin.y = clampRect.minY }
+            if f.maxX > clampRect.maxX { f.origin.x = clampRect.maxX - f.width }
+            if f.minX < clampRect.minX { f.origin.x = clampRect.minX }
+            w.setFrame(f.integral, display: true, animate: false)
+        }
     }
 
     @objc private func handleCanvasModified(_ note: Notification) {
@@ -703,16 +814,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func imageClear(_ sender: Any?) {
-        guard let canvas = canvasView() else { return }
-        let s = canvas.canvasRect.size
-        let img = NSImage(size: s)
-        img.lockFocus()
-        NSColor.white.setFill()
-        NSBezierPath(rect: NSRect(origin: .zero, size: s)).fill()
-        img.unlockFocus()
-
-        canvas.canvasImage = img
-        canvas.needsDisplay = true
+        canvasView()?.clearCanvas()
     }
 
     @objc private func imageToggleDrawOpaque(_ sender: NSMenuItem) {

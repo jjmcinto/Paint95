@@ -295,6 +295,7 @@ class ViewController: NSViewController, ToolbarDelegate, ColourPaletteDelegate, 
     private var canvasScrollView: NSScrollView?
     private var didEmbedCanvasInScroll = false
     private var colourWindowController: ColourSelectionWindowController?
+    private var leftColumnTopConstraint: NSLayoutConstraint?
     
     // NEW: fixed left column so the toolbar can’t move
     private var leftColumn: NSView!
@@ -363,6 +364,24 @@ class ViewController: NSViewController, ToolbarDelegate, ColourPaletteDelegate, 
             win.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
                                  height: CGFloat.greatestFiniteMagnitude)
         }
+        updateLeftColumnTopInset()
+        
+        // Listen to the host window only
+        if let host = self.view.window {
+            let nc = NotificationCenter.default
+            nc.addObserver(forName: NSWindow.didResizeNotification, object: host, queue: .main) { [weak self] _ in
+                self?.updateLeftColumnTopInset()
+            }
+            nc.addObserver(forName: NSWindow.didEnterFullScreenNotification, object: host, queue: .main) { [weak self] _ in
+                self?.updateLeftColumnTopInset()
+            }
+            nc.addObserver(forName: NSWindow.didExitFullScreenNotification, object: host, queue: .main) { [weak self] _ in
+                self?.updateLeftColumnTopInset()
+            }
+            nc.addObserver(forName: NSWindow.didMoveNotification, object: host, queue: .main) { [weak self] _ in
+                self?.updateLeftColumnTopInset()
+            }
+        }
     }
     
     // Keep controls above scroll content
@@ -370,6 +389,7 @@ class ViewController: NSViewController, ToolbarDelegate, ColourPaletteDelegate, 
         super.viewDidLayout()
         if let scroll = canvasScrollView {
             view.addSubview(colourPaletteView, positioned: .above, relativeTo: scroll)
+            view.addSubview(colourSwatchView,  positioned: .above, relativeTo: scroll)
             if let strip = toolSizeSelectorView {
                 view.addSubview(strip, positioned: .above, relativeTo: scroll)
             }
@@ -378,56 +398,167 @@ class ViewController: NSViewController, ToolbarDelegate, ColourPaletteDelegate, 
     
     // MARK: - Left column (TOOLBOX + SWATCH)
     
-    private func buildLeftColumnAndReparentLeftControls() {
-        // Make sure IB views are AL-friendly before we move them
-        toolbarView.translatesAutoresizingMaskIntoConstraints = false
-        colourSwatchView.translatesAutoresizingMaskIntoConstraints = false
-        
-        // Create column
-        let col = NSView()
-        col.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(col)
-        self.leftColumn = col
-        
-        // Column pinned to window edges (left+top+bottom), fixed width (use swatch width: 101)
-        NSLayoutConstraint.activate([
-            col.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            col.topAnchor.constraint(equalTo: view.topAnchor),
-            col.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            col.widthAnchor.constraint(equalToConstant: 101)
-        ])
-        
-        // Reparent toolbox + swatch
+    func buildLeftColumnAndReparentLeftControls() {
+        guard verifyOutlets(tag: "buildLeftColumn") else { return }
+
+        // -- Create the fixed left column once --
+        if leftColumn == nil {
+            let col = NSView()
+            col.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(col)
+            leftColumn = col
+
+            // Pin left/bottom/width; top is a stored constraint we update to sit below the title bar.
+            let top = col.topAnchor.constraint(equalTo: view.topAnchor, constant: 8)
+            leftColumnTopConstraint = top
+
+            NSLayoutConstraint.activate([
+                col.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
+                col.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8),
+                col.widthAnchor.constraint(equalToConstant: 92),
+                top
+            ])
+
+            col.setContentHuggingPriority(.required, for: .horizontal)
+            col.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
+
+        // -- Nuke any old constraints that involved the swatch (it does NOT live in the column) --
+        func deactivateConstraints(in container: NSView, involving v: NSView) {
+            let hits = container.constraints.filter { $0.firstItem as AnyObject? === v || $0.secondItem as AnyObject? === v }
+            NSLayoutConstraint.deactivate(hits)
+        }
+        deactivateConstraints(in: view, involving: colourSwatchView)
+        deactivateConstraints(in: leftColumn, involving: colourSwatchView)
+
+        // Ensure the swatch is *not* in the column; it will be placed next to the palette elsewhere
+        if colourSwatchView.superview != nil {
+            colourSwatchView.removeFromSuperview()
+        }
+
+        // -- Put ONLY the ToolBox in the column --
         toolbarView.removeFromSuperview()
-        colourSwatchView.removeFromSuperview()
-        col.addSubview(toolbarView)
-        col.addSubview(colourSwatchView)
-        
-        // Toolbox at top, full width of column
+        toolbarView.translatesAutoresizingMaskIntoConstraints = false
+        leftColumn.addSubview(toolbarView)
+
+        // Preferred top = 12, but allow Auto Layout to relax it if needed (to avoid jumping).
+        let topPreferred = toolbarView.topAnchor.constraint(equalTo: leftColumn.topAnchor, constant: 12)
+        topPreferred.priority = .defaultHigh
+
+        // Hard guard: ToolBox must never go above the column’s top.
+        let topFloor = toolbarView.topAnchor.constraint(greaterThanOrEqualTo: leftColumn.topAnchor, constant: 8)
+        topFloor.priority = .required
+
         NSLayoutConstraint.activate([
-            toolbarView.leadingAnchor.constraint(equalTo: col.leadingAnchor),
-            toolbarView.trailingAnchor.constraint(equalTo: col.trailingAnchor),
-            toolbarView.topAnchor.constraint(equalTo: col.topAnchor, constant: 8),
-            
-            // Keep toolbox above the swatch (equal spacing)
-            toolbarView.bottomAnchor.constraint(lessThanOrEqualTo: colourSwatchView.topAnchor, constant: -8)
+            toolbarView.leadingAnchor.constraint(equalTo: leftColumn.leadingAnchor),
+            toolbarView.trailingAnchor.constraint(equalTo: leftColumn.trailingAnchor),
+
+            topPreferred,   // soft preference
+            topFloor,       // hard floor
+
+            // If the window is very short, don’t let the toolbox overflow the column’s bottom.
+            toolbarView.bottomAnchor.constraint(lessThanOrEqualTo: leftColumn.bottomAnchor, constant: -12)
         ])
+
+        // Keep the ToolBox from “stretching” vertically; respect its intrinsic height.
+        toolbarView.setContentHuggingPriority(.required, for: .vertical)
+        toolbarView.setContentCompressionResistancePriority(.required, for: .vertical)
         
-        // Swatch at bottom, full width
-        NSLayoutConstraint.activate([
-            colourSwatchView.leadingAnchor.constraint(equalTo: col.leadingAnchor),
-            colourSwatchView.trailingAnchor.constraint(equalTo: col.trailingAnchor),
-            colourSwatchView.bottomAnchor.constraint(equalTo: col.bottomAnchor),
-            colourSwatchView.heightAnchor.constraint(equalToConstant: 54)
-        ])
-        
-        // z-order to keep toolbox clickable
-        view.addSubview(col, positioned: .above, relativeTo: nil)
+        // Ensure the column is below the title bar initially.
+        updateLeftColumnTopInset()
+    }
+    
+    // Replace the entire body of this method
+    private func updateLeftColumnTopInset() {
+        guard let leftColumn = self.leftColumn else { return }
+
+        // Remove the previous top constraint before we add a new one
+        leftColumnTopConstraint?.isActive = false
+
+        if let w = self.view.window {
+            if let guide = (w.contentLayoutGuide as? NSLayoutGuide) {
+                // Pin to the window’s usable content area (handles Full Screen & titlebar automatically)
+                let c = leftColumn.topAnchor.constraint(equalTo: guide.topAnchor, constant: 8)
+                c.priority = NSLayoutConstraint.Priority.required
+                c.isActive = true
+                leftColumnTopConstraint = c
+            } else {
+                // Fallback: compute the titlebar/toolbar inset and add it to view.topAnchor
+                let total = w.contentView?.bounds.height ?? 0
+                let usable = w.contentLayoutRect.height
+                let titlebarInset = max(0, total - usable)
+
+                let c = leftColumn.topAnchor.constraint(equalTo: view.topAnchor, constant: titlebarInset + 8)
+                c.priority = NSLayoutConstraint.Priority.required
+                c.isActive = true
+                leftColumnTopConstraint = c
+            }
+        } else {
+            // Before the view is in a window, just use view.topAnchor
+            let c = leftColumn.topAnchor.constraint(equalTo: view.topAnchor, constant: 8)
+            c.priority = NSLayoutConstraint.Priority.required
+            c.isActive = true
+            leftColumnTopConstraint = c
+        }
+
+        // Keep layout responsive during resizes / transitions
+        view.layoutSubtreeIfNeeded()
+    }
+    
+    @objc private func repositionToolBoxOnEvent(_ note: Notification) {
+        guard let host = self.view.window else { return }
+        // If you have a strong reference, use it. Otherwise, find any floating palette windows owned by the app.
+        let candidates = NSApp.windows.filter { (($0 as? NSPanel)?.isFloatingPanel ?? false) || $0.level == .floating }
+        for w in candidates { positionToolBox(w, host: host) }
     }
     
     // MARK: - UI builders
+    private func clamp(_ frame: NSRect, to clampRect: NSRect) -> NSRect {
+        var f = frame
+        if f.maxY > clampRect.maxY { f.origin.y = clampRect.maxY - f.height }
+        if f.minY < clampRect.minY { f.origin.y = clampRect.minY }
+        if f.maxX > clampRect.maxX { f.origin.x = clampRect.maxX - f.width }
+        if f.minX < clampRect.minX { f.origin.x = clampRect.minX }
+        return f.integral
+    }
+
+    private func clampRect(for host: NSWindow) -> NSRect {
+        let screen = host.screen ?? NSScreen.main!
+        // In full screen use the whole frame. In windowed mode use visibleFrame (excludes menu bar & dock).
+        return host.styleMask.contains(.fullScreen) ? screen.frame : screen.visibleFrame
+    }
+
+    /// Positions a floating toolbox panel near the host window’s content top-left, then clamps to screen.
+    @objc private func positionToolBox(_ toolBox: NSWindow, host: NSWindow) {
+        guard let contentView = host.contentView else { return }
+
+        // 1) Convert contentView.bounds -> window coords -> screen coords
+        var rectInWindow = contentView.convert(contentView.bounds, to: nil) // window base coords
+        rectInWindow.size = .zero                                            // anchor point rect
+        let rectInScreen = host.convertToScreen(rectInWindow)                // screen coords
+
+        // Anchor: a few px in from the content’s top-left
+        let anchorTopLeft = NSPoint(x: rectInScreen.minX + 12, y: rectInScreen.minY + 12) // minY because size==.zero
+        let clampR = clampRect(for: host)
+
+        // 2) Build a frame for the toolbox with its top-left at anchor, then clamp
+        var f = toolBox.frame
+        f.origin = NSPoint(x: anchorTopLeft.x,
+                           y: min(clampR.maxY - 12, anchorTopLeft.y) - f.height)
+        f = clamp(f, to: clampR)
+
+        // 3) Apply
+        toolBox.setFrame(f, display: true, animate: false)
+    }
     
     private func setupStatusBar() {
+        // Safety: ensure the left column exists before we constrain to it
+        if leftColumn == nil {
+            buildLeftColumnAndReparentLeftControls()
+            // If for some reason it’s still nil, fall back to the view’s leading edge.
+            if leftColumn == nil { leftColumn = view } // fallback anchor
+        }
+        
         let status = NSTextField(labelWithString: "X: 0, Y: 0    Selection: —")
         status.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         status.alignment = .left
@@ -509,29 +640,30 @@ class ViewController: NSViewController, ToolbarDelegate, ColourPaletteDelegate, 
     }
     
     private func placePaletteBetweenSignatureAndStatus() {
+        // Palette
         colourPaletteView.removeFromSuperview()
         colourPaletteView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(colourPaletteView)
 
+        // Swatch (to the left of the palette in the bottom band)
+        colourSwatchView.removeFromSuperview()
+        colourSwatchView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(colourSwatchView)
+
         NSLayoutConstraint.activate([
-            // Left edge just right of the fixed left column
-            colourPaletteView.leadingAnchor.constraint(equalTo: leftColumn.trailingAnchor, constant: 8),
+            // Swatch baseline just above the status bar
+            colourSwatchView.leadingAnchor.constraint(equalTo: leftColumn.trailingAnchor, constant: 8),
+            colourSwatchView.bottomAnchor.constraint(equalTo: statusBarField.topAnchor, constant: -kGapStripToStatus),
+            colourSwatchView.widthAnchor.constraint(equalToConstant: 72),
+            colourSwatchView.heightAnchor.constraint(equalToConstant: kPaletteHeight),
 
-            // Align the palette's bottom with the same baseline the tool-size bar uses
+            // Palette to the right of the swatch, same baseline
+            colourPaletteView.leadingAnchor.constraint(equalTo: colourSwatchView.trailingAnchor, constant: 8),
             colourPaletteView.bottomAnchor.constraint(equalTo: statusBarField.topAnchor, constant: -kGapStripToStatus),
-
-            // Keep the palette a fixed height
             colourPaletteView.heightAnchor.constraint(equalToConstant: kPaletteHeight),
-
-            // Leave some room on the right for the size strip
             colourPaletteView.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -180),
-
-            // Ensure it never overlaps the signature (acts as a ceiling)
             colourPaletteView.topAnchor.constraint(greaterThanOrEqualTo: signatureLabel.bottomAnchor, constant: kGapSigToPalette)
         ])
-
-        colourPaletteView.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        colourPaletteView.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
     }
 
     private func placeToolSizeStripRightOfPalette() {
