@@ -329,6 +329,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                            backing: .buffered,
                            defer: false)
         win.title = "Paint95"
+        win.delegate = self
         self.window = win
 
         // sensible starting content size + free resizing
@@ -2105,6 +2106,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let w = notification.object as? NSWindow, w === helpTopicsWC?.window {
             helpTopicsWC = nil
         }
+    }
+    
+    // Intercept the red-close button for document windows and run our Exit logic.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        // Let non-document windows (palettes, help, etc.) close normally.
+        if sender.isPalette || sender === helpTopicsWC?.window {
+            return true
+        }
+
+        // If this window hosts a CanvasView, treat "close" like File > Exit.
+        if sender.contentView?.firstSubview(of: CanvasView.self) != nil {
+            fileExit(sender)   // shows the Save/Discard/Cancel prompt and quits if appropriate
+            return false       // cancel the default close; our exit flow will handle it
+        }
+
+        return true
     }
 
     // MARK: - Save/Discard prompt before destructive actions
