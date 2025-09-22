@@ -1822,28 +1822,32 @@ class CanvasView: NSView {
     
     func commitTextView(_ tv: NSTextView) {
         let text = tv.string
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty else {
+            tv.removeFromSuperview()
+            textView = nil
+            needsDisplay = true
+            return
+        }
 
-        // Undo + ensure backing image
         saveUndoState()
         initializeCanvasIfNeeded()
         guard let image = canvasImage else { return }
 
-        // Centered paragraph style
+        // Center alignment
         let para = NSMutableParagraphStyle()
         para.alignment = .center
-        let textAttributes: [NSAttributedString.Key: Any] = [
+        let attrs: [NSAttributedString.Key: Any] = [
             .font: tv.font ?? NSFont.systemFont(ofSize: 14),
             .foregroundColor: currentColour,
             .paragraphStyle: para
         ]
-        let attributed = NSAttributedString(string: text, attributes: textAttributes)
+        let attributed = NSAttributedString(string: text, attributes: attrs)
 
-        // Target box in IMAGE space (convert from canvas/view coords)
+        // Work in IMAGE space, then center inside the box
         let rCanvas = tv.frame
         let rImg = imgRect(rCanvas)
 
-        // Measure laid-out text within the box size, then center it
+        // Measure laid-out text within the box, then center both axes
         let bounds = attributed.boundingRect(
             with: rImg.size,
             options: [.usesLineFragmentOrigin, .usesFontLeading]
@@ -1851,14 +1855,14 @@ class CanvasView: NSView {
         let drawW = min(ceil(bounds.width),  rImg.width)
         let drawH = min(ceil(bounds.height), rImg.height)
         let drawRect = NSRect(
-            x: rImg.origin.x + (rImg.width  - drawW) / 2,
-            y: rImg.origin.y + (rImg.height - drawH) / 2,
+            x: rImg.origin.x + (rImg.width  - drawW) / 2.0,
+            y: rImg.origin.y + (rImg.height - drawH) / 2.0,
             width: drawW, height: drawH
         )
 
         image.lockFocus()
         NSGraphicsContext.current?.imageInterpolation = .none
-        attributed.draw(in: drawRect)   // ← no manual CG flip; draws right-side-up
+        attributed.draw(in: drawRect)
         image.unlockFocus()
 
         tv.removeFromSuperview()
@@ -2087,16 +2091,32 @@ class CanvasView: NSView {
         return NSPoint(x: zoomRect.origin.x + (p.x - o.x) / s,
                        y: zoomRect.origin.y + (p.y - o.y) / s)
     }
-
     
     func createTextView(in rect: NSRect) {
         textView?.removeFromSuperview()
 
-        let tv = CanvasTextView(frame: rect)
+        let box = topLeftRect(from: rect).integral
+        let tv = CanvasTextView(frame: box)
+
         tv.font = NSFont.systemFont(ofSize: 14)
-        tv.backgroundColor = NSColor.white
+        tv.backgroundColor = .white
         tv.textColor = currentColour
-        tv.alignment = .center              // ← preview centred like the final commit
+
+        // Horizontal centering
+        let para = NSMutableParagraphStyle()
+        para.alignment = .center
+        tv.alignment = .center
+        tv.defaultParagraphStyle = para
+        tv.typingAttributes[.paragraphStyle] = para
+
+        // Use the whole box width; we'll center vertically via insets
+        tv.textContainer?.lineFragmentPadding = 0
+        tv.textContainer?.widthTracksTextView = true
+        tv.textContainer?.heightTracksTextView = false
+        tv.isHorizontallyResizable = false
+        tv.isVerticallyResizable = false
+        tv.textContainerInset = .zero
+
         tv.delegate = self
         tv.isEditable = true
         tv.isSelectable = true
@@ -2107,6 +2127,9 @@ class CanvasView: NSView {
         addSubview(tv)
         window?.makeFirstResponder(tv)
         textView = tv
+
+        // Initial vertical centering
+        centerTextPreview(tv)
     }
     
     private func drawShape(to image: NSImage?) {
@@ -3367,6 +3390,33 @@ class CanvasView: NSView {
         NSGraphicsContext.restoreGraphicsState()
 
         return rep.representation(using: .png, properties: [:])
+    }
+    
+    /// Normalize a drag rect and convert its origin to TOP-LEFT in this view’s coordinates.
+    private func topLeftRect(from r: NSRect) -> NSRect {
+        let n = r.standardized // ensures width/height ≥ 0 with minX/minY
+        if self.isFlipped {
+            // Flipped views already have (0,0) at top-left
+            return n
+        } else {
+            // Unflipped: convert from bottom-left origin to top-left origin
+            return NSRect(x: n.minX, y: n.maxY - n.height, width: n.width, height: n.height)
+        }
+    }
+    
+    private func centerTextPreview(_ tv: NSTextView) {
+        guard let lm = tv.layoutManager, let tc = tv.textContainer else { return }
+        lm.ensureLayout(for: tc)
+        let used = lm.usedRect(for: tc).size
+        let box  = tv.bounds.size
+
+        // Horizontal padding = 0 so width is the full box; vertical inset centers the content
+        let verticalInset = max(0, (box.height - used.height) / 2.0)
+        tv.textContainerInset = NSSize(width: 0, height: verticalInset)
+    }
+    
+    func textDidChange(_ notification: Notification) {
+        if let tv = textView { centerTextPreview(tv) }
     }
     
     deinit {
