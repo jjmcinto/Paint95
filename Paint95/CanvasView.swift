@@ -185,6 +185,7 @@ extension CanvasView {
 
 class CanvasView: NSView {
     
+    private let kCanvasColorSpace: CGColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
     weak var delegate: CanvasViewDelegate?
     private var colourWindowController: ColourSelectionWindowController?
     
@@ -373,6 +374,46 @@ class CanvasView: NSView {
     
     @objc dynamic var drawOpaque: Bool = true   // default ON like classic Paint
     
+    // edit the backing bitmap in sRGB with "copy" compositing.
+    private func withCanvasCGContext(
+        _ body: (_ ctx: CGContext, _ pixelsWide: Int, _ pixelsHigh: Int) -> Void
+    ) {
+        initializeCanvasIfNeeded()
+        guard let baseCG = canvasImage?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+
+        let w = baseCG.width
+        let h = baseCG.height
+
+        guard let ctx = CGContext(
+            data: nil,
+            width: w,
+            height: h,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: kCanvasColorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return }
+
+        ctx.setAllowsAntialiasing(false)
+        ctx.setShouldAntialias(false)
+        ctx.interpolationQuality = .none
+        ctx.setBlendMode(.copy) // replace pixels, no blending
+
+        // Draw existing bitmap into our sRGB canvas first
+        ctx.draw(baseCG, in: CGRect(x: 0, y: 0, width: w, height: h))
+
+        // Let the caller mutate pixels
+        body(ctx, w, h)
+
+        // Commit back to NSImage (preserves sRGB on the CGImage)
+        if let out = ctx.makeImage() {
+            canvasImage = NSImage(cgImage: out, size: canvasImage?.size ?? .zero)
+            needsDisplay = true
+            NotificationCenter.default.post(name: .canvasDidModify, object: nil)
+        }
+    }
+
+    
     // MARK: - Pixel helpers (Pencil)
     private func imagePixel(from viewPoint: NSPoint) -> (x: Int, y: Int)? {
         // Convert from view → canvas coords (undo zoom if active)
@@ -389,30 +430,9 @@ class CanvasView: NSView {
         return (ix, iy)
     }
     
+    // use the sRGB context above (kept signature so Pencil still calls this).
     private func mutateCanvasPixels(_ body: (_ ctx: CGContext, _ w: Int, _ h: Int) -> Void) {
-        guard let baseCG = canvasImage?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
-        let w = baseCG.width, h = baseCG.height
-        guard let ctx = CGContext(
-            data: nil, width: w, height: h,
-            bitsPerComponent: 8, bytesPerRow: w * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return }
-
-        ctx.setAllowsAntialiasing(false)
-        ctx.setShouldAntialias(false)
-        ctx.interpolationQuality = .none
-        ctx.setBlendMode(.copy) // replace pixels, no blending
-
-        // Draw existing image, then let the caller paint pixels on top:
-        ctx.draw(baseCG, in: CGRect(x: 0, y: 0, width: w, height: h))
-        body(ctx, w, h)
-
-        if let newCG = ctx.makeImage() {
-            self.canvasImage = NSImage(cgImage: newCG, size: canvasImage?.size ?? .zero)
-            self.needsDisplay = true
-            NotificationCenter.default.post(name: .canvasDidModify, object: nil)
-        }
+        withCanvasCGContext(body)
     }
 
     private func forEachPixelOnLine(from p0: (Int, Int), to p1: (Int, Int), visit: (Int, Int) -> Void) {
@@ -857,7 +877,7 @@ class CanvasView: NSView {
         let point  = convertZoomedPointToCanvas(viewPt)           // CANVAS space
         emitStatusUpdate(cursor: point)
 
-        // --- Selection handle hit-test first (unchanged) ---
+        // Selection handle hit-test
         if let rect = selectionRect
             ?? (selectedImage != nil ? NSRect(origin: selectedImageOrigin ?? .zero, size: selectedImage!.size) : nil) {
             for (i, handle) in selectionHandlePositions(rect: rect).enumerated() where handle.contains(point) {
@@ -871,19 +891,19 @@ class CanvasView: NSView {
             }
         }
 
-        // --- ✅ Canvas border/corner hit-test BEFORE any tool logic (including Pencil) ---
+        // Canvas border/corner hit-test BEFORE tool logic
         if let h = (isZoomed ? resizeHandleHit(atViewPoint: viewPt) : resizeHandle(at: point, generous: true)) {
             saveUndoState()
             activeResizeHandle = h
             isResizingCanvas = true
-            dragStartPoint = point              // canvas-space copy
-            dragStartViewPoint = viewPt         // view-space copy (precise under zoom)
+            dragStartPoint = point
+            dragStartViewPoint = viewPt
             initialCanvasRect = canvasRect
             beginScrollFreezeIfNeeded()
             return
         }
 
-        // Commit paste if clicking outside it (unchanged)
+        // Commit paste if clicking outside it
         if isPastingImage,
            let img = selectedImage, let io = selectedImageOrigin {
             let activeRect = NSRect(origin: io, size: img.size)
@@ -893,13 +913,12 @@ class CanvasView: NSView {
                 isPastingActive = false
                 pastedImage = nil
                 pastedImageOrigin = nil
-                // fall through
             }
         }
 
         initializeCanvasIfNeeded()
 
-        // --- Pencil after resize hit-tests so edges can be grabbed while Pencil is active ---
+        // Pencil after resize hit-tests so you can grab edges while Pencil is active
         if currentTool == .pencil {
             saveUndoState()
             if let px = imagePixel(from: viewPt) {
@@ -975,7 +994,6 @@ class CanvasView: NSView {
             isDrawingShape = true
 
         case .zoom:
-            // If already zoomed, exit; otherwise enter zoom to selected preview box
             if isZoomed {
                 isZoomed = false
                 zoomScale = 1.0
@@ -1018,7 +1036,7 @@ class CanvasView: NSView {
         let shiftPressed = event.modifierFlags.contains(.shift)
         emitStatusUpdate(cursor: point)
 
-        // --- Selection resizing (unchanged order) ---
+        // Selection resizing
         if isResizingSelection, let handle = activeSelectionHandle {
             var newRect = originalSelectionRect
             let dx = point.x - resizeStartPoint.x
@@ -1061,11 +1079,10 @@ class CanvasView: NSView {
             return
         }
 
-        // --- ✅ Canvas resize preview BEFORE any tool-specific work (incl. Pencil) ---
+        // Canvas resize preview
         if isResizingCanvas, let handle = activeResizeHandle {
             var newRect = initialCanvasRect
 
-            // Compute deltas in VIEW space; convert once when zoomed
             let dxV = viewPt.x - dragStartViewPoint.x
             let dyV = viewPt.y - dragStartViewPoint.y
             let dx  = isZoomed ? (dxV / zoomScaleSafe) : dxV
@@ -1091,7 +1108,6 @@ class CanvasView: NSView {
                 newRect.size.width  += dx; newRect.size.height += dy
             }
 
-            // Min size while keeping opposite edge anchored
             if newRect.width < 50 {
                 switch handle { case .bottomLeft, .middleLeft, .topLeft: newRect.origin.x = initialCanvasRect.maxX - 50; default: break }
                 newRect.size.width = 50
@@ -1101,16 +1117,13 @@ class CanvasView: NSView {
                 newRect.size.height = 50
             }
 
-            // PREVIEW ONLY (no frame/ICS churn)
             canvasRect = newRect
             needsDisplay = true
-
-            // Keep scrollbars frozen while dragging
             maintainScrollFreeze()
             return
         }
 
-        // --- Pencil stroke path AFTER resize handling ---
+        // Pencil continuous drawing (now lands in sRGB via mutateCanvasPixels)
         let p = convert(event.locationInWindow, from: nil)
         if currentTool == .pencil {
             if let prev = lastPencilPixel, let cur = imagePixel(from: p), prev != cur {
@@ -1120,7 +1133,7 @@ class CanvasView: NSView {
             return
         }
 
-        // --- Existing dragging logic for other tools (unchanged) ---
+        // Dragging selection
         if isDraggingSelection,
            let startPoint = selectionDragStartPoint,
            let imageOrigin = selectionImageStartOrigin,
@@ -1134,6 +1147,7 @@ class CanvasView: NSView {
             return
         }
 
+        // Other tool previews
         switch currentTool {
         case .select:
             if !isPastingImage {
@@ -1185,26 +1199,20 @@ class CanvasView: NSView {
         }
     }
     
-    // CanvasView.swift
     override func mouseUp(with event: NSEvent) {
-        // --- ✅ Commit canvas resize BEFORE any tool-specific early returns ---
+        // Commit canvas resize first
         if isResizingCanvas {
             isResizingCanvas = false
             let handleUsed = activeResizeHandle
-            cropCanvasImageToCanvasRect(using: handleUsed)  // commits + syncs frame/ICS
+            cropCanvasImageToCanvasRect(using: handleUsed)
             activeResizeHandle = nil
-
-            // Stop freezing BEFORE any deferred scrolling we do next.
             endScrollFreeze()
 
-            // Keep the anchor corner visible (your existing async scrollToVisibleSafe block)
             if let sv = enclosingScrollView {
                 DispatchQueue.main.async { [weak self, weak sv] in
                     guard let self = self, let _ = sv else { return }
-
                     let w = self.canvasRect.width
                     let h = self.canvasRect.height
-
                     let canvasAnchor: NSRect
                     switch handleUsed {
                     case .topRight?:     canvasAnchor = NSRect(x: w - 1, y: h - 1, width: 1, height: 1)
@@ -1228,12 +1236,10 @@ class CanvasView: NSView {
                     self.scrollToVisibleSafe(target)
                 }
             }
-
             needsDisplay = true
             return
         }
 
-        // Pencil cleanup after resize commit
         if currentTool == .pencil {
             lastPencilPixel = nil
             return
@@ -1290,14 +1296,14 @@ class CanvasView: NSView {
         case .eraser:
             if pointsAreEqual(startPoint, endPoint) {
                 initializeCanvasIfNeeded()
-                canvasImage?.lockFocus()
-                NSColor.white.set()
                 let b = max(1, toolSize)
                 let rCanvas = NSRect(x: startPoint.x - b/2, y: startPoint.y - b/2, width: b, height: b)
-                let rImg = imgRect(rCanvas)
-                NSBezierPath(ovalIn: rImg).fill()
-                canvasImage?.unlockFocus()
-                needsDisplay = true
+                let rImg = imgRect(rCanvas) // image-space rect
+                withCanvasCGContext { ctx, _, _ in
+                    ctx.setBlendMode(.copy)
+                    ctx.setFillColor(NSColor.white.cgColor)
+                    ctx.fillEllipse(in: CGRect(x: rImg.origin.x, y: rImg.origin.y, width: rImg.size.width, height: rImg.size.height))
+                }
             }
             currentPath = nil
 
@@ -1332,14 +1338,15 @@ class CanvasView: NSView {
         case .brush:
             if pointsAreEqual(startPoint, endPoint) {
                 initializeCanvasIfNeeded()
-                canvasImage?.lockFocus()
-                currentColour.set()
                 let b = max(1, toolSize)
                 let rCanvas = NSRect(x: startPoint.x - b/2, y: startPoint.y - b/2, width: b, height: b)
-                let rImg = imgRect(rCanvas)
-                NSBezierPath(ovalIn: rImg).fill()
-                canvasImage?.unlockFocus()
-                needsDisplay = true
+                let rImg = imgRect(rCanvas) // image-space rect
+                withCanvasCGContext { ctx, _, _ in
+                    ctx.setBlendMode(.copy)
+                    let c = (currentColour.usingColorSpace(.deviceRGB) ?? currentColour).cgColor
+                    ctx.setFillColor(c)
+                    ctx.fillEllipse(in: CGRect(x: rImg.origin.x, y: rImg.origin.y, width: rImg.size.width, height: rImg.size.height))
+                }
             }
             currentPath = nil
 
@@ -1364,13 +1371,18 @@ class CanvasView: NSView {
             }
             if pointsAreEqual(startPoint, finalEnd) {
                 initializeCanvasIfNeeded()
-                canvasImage?.lockFocus()
-                currentColour.set()
-                NSRect(x: startPoint.x, y: startPoint.y, width: 1, height: 1).fill()
-                canvasImage?.unlockFocus()
+                // single pixel commit via sRGB ctx
+                let rCanvas = NSRect(x: startPoint.x, y: startPoint.y, width: 1, height: 1)
+                let rImg = imgRect(rCanvas)
+                withCanvasCGContext { ctx, _, _ in
+                    ctx.setBlendMode(.copy)
+                    let c = (currentColour.usingColorSpace(.deviceRGB) ?? currentColour).cgColor
+                    ctx.setFillColor(c)
+                    ctx.fill(CGRect(x: rImg.origin.x, y: rImg.origin.y, width: rImg.size.width, height: rImg.size.height))
+                }
             } else {
                 endPoint = finalEnd
-                drawShape(to: canvasImage)
+                drawShape(to: canvasImage) // now uses sRGB pipeline
             }
             isDrawingShape = false
             needsDisplay = true
@@ -1385,23 +1397,39 @@ class CanvasView: NSView {
                 curvePhase = 2
             case 2:
                 control2 = pt
+                // Commit curve using the same technique as preview
                 let c1Eff = control1
                 let c2Eff = (pointsAreEqual(control2, curveEnd) ? curveEnd : control2)
+
+                // Build path in canvas coords
                 let path = NSBezierPath()
                 path.move(to: curveStart)
                 path.curve(to: curveEnd, controlPoint1: c1Eff, controlPoint2: c2Eff)
                 path.lineWidth = toolSize
 
-                let translated = path.copy() as! NSBezierPath
-                let t = AffineTransform(translationByX: -canvasRect.origin.x, byY: -canvasRect.origin.y)
-                translated.transform(using: t)
+                // Stroke via sRGB context
+                withCanvasCGContext { ctx, w, h in
+                    let sx = CGFloat(w) / max(1, canvasRect.width)
+                    let sy = CGFloat(h) / max(1, canvasRect.height)
+                    ctx.saveGState()
+                    ctx.translateBy(x: -canvasRect.origin.x * sx, y: -canvasRect.origin.y * sy)
+                    ctx.scaleBy(x: sx, y: sy)
 
-                canvasImage?.lockFocus()
-                currentColour.set()
-                translated.stroke()
-                canvasImage?.unlockFocus()
-                drawnPaths.append((path: translated.copy() as! NSBezierPath, colour: currentColour))
+                    NSGraphicsContext.saveGraphicsState()
+                    let previous = NSGraphicsContext.current
+                    let g = NSGraphicsContext(cgContext: ctx, flipped: false)
+                    NSGraphicsContext.current = g
 
+                    currentColour.set()
+                    path.stroke()
+
+                    ctx.flush()
+                    NSGraphicsContext.current = previous
+                    NSGraphicsContext.restoreGraphicsState()
+                    ctx.restoreGState()
+                }
+
+                drawnPaths.append((path: path.copy() as! NSBezierPath, colour: currentColour))
                 curvePhase = 0
                 curveStart = .zero; curveEnd = .zero
                 control1 = .zero;   control2 = .zero
@@ -2100,23 +2128,36 @@ class CanvasView: NSView {
         centerTextPreview(tv)
     }
     
-    private func drawShape(to image: NSImage?) {
-        guard let image = image else { return }
-        saveUndoState()
+    // commit shapes through the same sRGB pipeline (no lockFocus).
+    // Commit shapes through the same sRGB pipeline (no lockFocus).
+    private func drawShape(to _: NSImage?) {
+        guard let shapePath = shapePathBetween(startPoint, endPoint) else { return }
+        let strokeColor = currentColour
 
-        let path = shapePathBetween(startPoint, endPoint)
-        path?.lineWidth = toolSize
+        withCanvasCGContext { ctx, w, h in
+            let sx = CGFloat(w) / max(1, canvasRect.width)
+            let sy = CGFloat(h) / max(1, canvasRect.height)
 
-        let transformedPath = path?.copy() as! NSBezierPath
-        let transform = AffineTransform(translationByX: -canvasRect.origin.x, byY: -canvasRect.origin.y)
-        transformedPath.transform(using: transform)
+            ctx.saveGState()
+            ctx.translateBy(x: -canvasRect.origin.x * sx, y: -canvasRect.origin.y * sy)
+            ctx.scaleBy(x: sx, y: sy)
 
-        image.lockFocus()
-        currentColour.setStroke()
-        transformedPath.stroke()
-        image.unlockFocus()
+            NSGraphicsContext.saveGraphicsState()
+            let previous = NSGraphicsContext.current
+            let g = NSGraphicsContext(cgContext: ctx, flipped: false)
+            NSGraphicsContext.current = g
 
-        drawnPaths.append((path: transformedPath.copy() as! NSBezierPath, colour: currentColour))
+            strokeColor.set()
+            shapePath.lineWidth = toolSize
+            shapePath.lineJoinStyle = .miter
+            shapePath.lineCapStyle  = .butt
+            shapePath.stroke()
+
+            ctx.flush()
+            NSGraphicsContext.current = previous
+            NSGraphicsContext.restoreGraphicsState()
+            ctx.restoreGState()
+        }
     }
     
     func rectBetween(_ p1: NSPoint, and p2: NSPoint) -> NSRect {
@@ -2163,59 +2204,38 @@ class CanvasView: NSView {
         }
     }
     
+    // stroke the current path via sRGB CGContext (no lockFocus).
+    // Stroke the current path via sRGB CGContext (no lockFocus).
     private func drawCurrentPathToCanvas() {
         guard let path = currentPath else { return }
-        initializeCanvasIfNeeded()
-        
-        // Translate from view/canvas space → image space
-        let translatedPath = path.copy() as! NSBezierPath
-        let transform = AffineTransform(translationByX: -canvasRect.origin.x, byY: -canvasRect.origin.y)
-        translatedPath.transform(using: transform)
+        let strokeColor = (currentTool == .eraser) ? NSColor.white : currentColour
 
-        // Round caps/joins so wide strokes (brush/eraser) look continuous
-        translatedPath.lineCapStyle = .round
-        translatedPath.lineJoinStyle = .round
-        
-        var strokeColour: NSColor = currentColour
-        var lineWidth: CGFloat = 1
+        withCanvasCGContext { ctx, w, h in
+            // Map canvas coords → bitmap pixels
+            let sx = CGFloat(w) / max(1, canvasRect.width)
+            let sy = CGFloat(h) / max(1, canvasRect.height)
 
-        switch currentTool {
-        case .pencil:
-            strokeColour = currentColour
-            lineWidth = 1
+            ctx.saveGState()
+            ctx.translateBy(x: -canvasRect.origin.x * sx, y: -canvasRect.origin.y * sy)
+            ctx.scaleBy(x: sx, y: sy)
 
-        case .brush:
-            strokeColour = currentColour
-            lineWidth = max(1, toolSize)
+            // Draw via AppKit path APIs into our CG context
+            NSGraphicsContext.saveGraphicsState()
+            let previous = NSGraphicsContext.current
+            let g = NSGraphicsContext(cgContext: ctx, flipped: false)
+            NSGraphicsContext.current = g
 
-        case .eraser:
-            // Erase by painting white with the chosen size
-            strokeColour = .white
-            lineWidth = max(1, toolSize)
+            strokeColor.set()
+            path.lineWidth = toolSize
+            path.lineJoinStyle = .miter
+            path.lineCapStyle  = .butt
+            path.stroke()
 
-        default:
-            return
+            ctx.flush()
+            NSGraphicsContext.current = previous
+            NSGraphicsContext.restoreGraphicsState()
+            ctx.restoreGState()
         }
-
-        translatedPath.lineWidth = lineWidth
-
-        // Draw to the backing image
-        canvasImage?.lockFocus()
-        strokeColour.set()
-        translatedPath.stroke()
-        canvasImage?.unlockFocus()
-
-        // Keep vector cache only for real strokes; eraser shouldn't be cached
-        if currentTool == .eraser {
-            // Also drop any cached paths that this erasure intersects
-            let hit = translatedPath.bounds
-            drawnPaths.removeAll { $0.path.bounds.intersects(hit) }
-        } else {
-            drawnPaths.append((path: translatedPath.copy() as! NSBezierPath, colour: strokeColour))
-        }
-
-        currentPath = nil
-        needsDisplay = true
     }
     
     // Hit-test for canvas border/corners in VIEW coordinates (works with zoom + gutters).
@@ -2607,16 +2627,31 @@ class CanvasView: NSView {
         NotificationCenter.default.post(name: .canvasDidModify, object: nil)
     }
     
+    // first-time canvas creation uses an sRGB bitmap (no device-dependent defaults).
+    // First-time canvas creation uses an sRGB bitmap (no device-dependent defaults).
     private func initializeCanvasIfNeeded() {
-        if canvasImage == nil {
-            canvasImage = NSImage(size: canvasRect.size)
-            canvasImage?.lockFocus()
-            NSColor.white.set()
-            NSBezierPath(rect: NSRect(origin: .zero, size: canvasRect.size)).fill()
-            canvasImage?.unlockFocus()
+        guard canvasImage == nil else { return }
+        let size = canvasRect.size
+        let pw = max(1, Int(round(size.width)))
+        let ph = max(1, Int(round(size.height)))
 
-            // Ensure our view/frame matches the canvas
-            updateCanvasSize(to: canvasRect.size)
+        guard let ctx = CGContext(
+            data: nil,
+            width: pw,
+            height: ph,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: kCanvasColorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return }
+
+        // Start white, like classic Paint
+        ctx.setFillColor(NSColor.white.cgColor)
+        ctx.fill(CGRect(x: 0, y: 0, width: pw, height: ph))
+
+        if let out = ctx.makeImage() {
+            let img = NSImage(cgImage: out, size: size)
+            canvasImage = img
         }
     }
     
@@ -3385,6 +3420,83 @@ class CanvasView: NSView {
     
     func textDidChange(_ notification: Notification) {
         if let tv = textView { centerTextPreview(tv) }
+    }
+    
+    // One canonical backing bitmap for the canvas
+    @discardableResult
+    private func ensureCanvasRep() -> NSBitmapImageRep? {
+        // Desired logical canvas size (points == logical pixels)
+        let size = canvasRect.size
+        let pw = max(1, Int(round(size.width)))
+        let ph = max(1, Int(round(size.height)))
+
+        // If we already have a raster, wrap it as a bitmap rep and return.
+        if let cg = canvasImage?.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            let rep = NSBitmapImageRep(cgImage: cg)
+            rep.size = NSSize(width: pw, height: ph) // 1pt == 1px for Finder previews etc.
+            return rep
+        }
+
+        // Otherwise create a brand-new sRGB bitmap and seed it white (classic Paint).
+        guard let ctx = CGContext(
+            data: nil,
+            width: pw,
+            height: ph,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: kCanvasColorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        // Fill background
+        ctx.setFillColor(NSColor.white.cgColor)
+        ctx.fill(CGRect(x: 0, y: 0, width: pw, height: ph))
+
+        // Commit to NSImage and a matching NSBitmapImageRep
+        guard let cgOut = ctx.makeImage() else { return nil }
+
+        // Update the view's backing image so the rest of the app sees a canvas.
+        let img = NSImage(cgImage: cgOut, size: size)
+        canvasImage = img
+
+        // Return a rep that preserves the sRGB color space
+        let rep = NSBitmapImageRep(cgImage: cgOut)
+        rep.size = NSSize(width: pw, height: ph)
+        return rep
+    }
+
+    private func withCanvasBitmapContext(_ body: (_ ctx: CGContext, _ rep: NSBitmapImageRep) -> Void) {
+        // 1) Make sure we have a bitmap rep to draw into
+        guard let rep = ensureCanvasRep(),
+              let g = NSGraphicsContext(bitmapImageRep: rep) else { return }
+
+        // 2) Push graphics state and make this rep current
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = g
+
+        // 3) Configure the CoreGraphics context (no smoothing/blending surprises)
+        let ctx = g.cgContext
+        ctx.setAllowsAntialiasing(false)
+        ctx.setShouldAntialias(false)
+        ctx.interpolationQuality = CGInterpolationQuality.none   // <-- fully qualified
+        ctx.setBlendMode(CGBlendMode.copy)                       // <-- fully qualified
+
+        // 4) Let caller draw
+        body(ctx, rep)
+
+        // 5) Flush and restore
+        g.flushGraphics()
+        NSGraphicsContext.restoreGraphicsState()
+
+        // 6) Update the view's backing image from the mutated rep
+        if let cg = rep.cgImage {
+            let size = NSSize(width: rep.pixelsWide, height: rep.pixelsHigh)
+            self.canvasImage = NSImage(cgImage: cg, size: size)
+        }
+
+        // 7) Mark dirty + broadcast modification
+        needsDisplay = true
+        NotificationCenter.default.post(name: .canvasDidModify, object: nil)
     }
     
     deinit {
