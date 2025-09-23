@@ -271,6 +271,7 @@ final class StretchSkewSheetController: NSWindowController, NSTextFieldDelegate 
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
+    private var didPrimeManualResize = false
     private var bitmapPreviewWindows: [BitmapPreviewWindowController] = []
     private weak var activeSaveAsPanel: NSSavePanel?
     private var lastSavedSnapshot: Data?
@@ -289,7 +290,64 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // --- Status Bar (NSStatusItem) ---
     private var statusItem: NSStatusItem?
+    
+    // AppDelegate conforms to NSWindowDelegate already
+    func windowDidBecomeKey(_ notification: Notification) {
+        coldStartCanvasInteractions()
+        DispatchQueue.main.async { [weak self] in
+            self?.coldStartCanvasInteractions()
+        }
+    }
+    
+    // Cold-start the canvas so manual resize works immediately on first load.
+    // It waits for a real document size, nudges magnification, rebuilds tracking/cursor
+    // infrastructure, and re-broadcasts the current tool (as Zoom would).
+    private func coldStartCanvasInteractions(retry: Int = 12) {
+        window?.contentView?.layoutSubtreeIfNeeded()
 
+        guard let scroll = canvasScrollView(),
+              let canvas = canvasView() else {
+            if retry > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) { [weak self] in
+                    self?.coldStartCanvasInteractions(retry: retry - 1)
+                }
+            }
+            return
+        }
+
+        let docSize = scroll.documentView?.bounds.size ?? .zero
+        if (docSize.width <= 1 || docSize.height <= 1) && retry > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) { [weak self] in
+                self?.coldStartCanvasInteractions(retry: retry - 1)
+            }
+            return
+        }
+
+        scroll.allowsMagnification = true
+        scroll.contentView.postsBoundsChangedNotifications = true
+        if scroll.minMagnification <= 0 { scroll.minMagnification = 0.125 }
+        if scroll.maxMagnification <= 0 { scroll.maxMagnification = 8.0 }
+
+        let m = max(scroll.magnification, 1.0)
+        scroll.magnification = m + 0.0001
+        scroll.magnification = m
+        scroll.reflectScrolledClipView(scroll.contentView)
+
+        canvas.needsLayout = true
+        canvas.layoutSubtreeIfNeeded()
+        canvas.updateTrackingAreas()
+        canvas.resetCursorRects()
+        canvas.window?.invalidateCursorRects(for: canvas)
+
+        canvas.updateCanvasSize(to: canvas.canvasRect.size)
+        canvas.needsDisplay = true
+
+        // ✅ Strongly-typed re-broadcast of the current tool (no KVC)
+        NotificationCenter.default.post(name: .toolChanged, object: canvas.currentTool)
+
+        canvas.window?.makeFirstResponder(canvas)
+    }
+    
     @objc func fileViewBitmap(_ sender: Any?) {
         // Use the same upright 1× pipeline you use for saving/export
         guard let image = snapshotCanvas() else { return }
@@ -354,6 +412,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         canvasView()?.drawOpaque = isDrawOpaque
 
+        // 🔧 Small layout nudge so the scroll/doc sizes are real before our cold-start
+        if let c = canvasView(), let s = c.enclosingScrollView {
+            c.invalidateIntrinsicContentSize()
+            c.setFrameSize(c.intrinsicContentSize)
+            s.layoutSubtreeIfNeeded()
+        }
+
+        // Prime zoom/scroll geometry so manual resize works immediately.
+        DispatchQueue.main.async { [weak self] in
+            self?.coldStartCanvasInteractions()
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        canvasView()?.drawOpaque = isDrawOpaque
+
         // Establish "clean" baseline for the initial blank canvas
         DispatchQueue.main.async { [weak self] in
             self?.refreshBaselineSnapshot()
@@ -364,7 +436,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                                selector: #selector(handleCanvasModified(_:)),
                                                name: .canvasDidModify,
                                                object: nil)
-        
+
         // Floating palettes: make them follow full screen & clamp to visible area
         prepareFloatingPalettesForFullScreen()
         reclampFloatingPalettes()
@@ -381,7 +453,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // ✅ Create crash-proof status bar item
         setupStatusBar()
     }
-
+    
     // MARK: - Status Bar (NSStatusItem)
 
     private func setupStatusBar() {

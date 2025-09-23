@@ -840,21 +840,8 @@ class CanvasView: NSView {
             }
         }
     }
-
+    
     override func mouseDown(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
-
-        // === Pixel-perfect paths (no blending) for Pencil ===
-        if currentTool == .pencil {
-            initializeCanvasIfNeeded()        // ensure bitmap exists on brand-new docs
-            saveUndoState()
-            if let px = imagePixel(from: p) {
-                lastPencilPixel = px
-                drawPencilSegment(from: px, to: px, color: primaryColour)
-            }
-            return
-        }
-
         zoomPreviewRect = nil
         if let tv = textView {
             if tv.window?.firstResponder == tv {
@@ -870,29 +857,27 @@ class CanvasView: NSView {
         let point  = convertZoomedPointToCanvas(viewPt)           // CANVAS space
         emitStatusUpdate(cursor: point)
 
-        // Selection resize handles
-        if let rect = selectionRect ?? (selectedImage != nil ? NSRect(origin: selectedImageOrigin ?? .zero, size: selectedImage!.size) : nil) {
-            for (i, handle) in selectionHandlePositions(rect: rect).enumerated() {
-                if handle.contains(point) {
-                    saveUndoState()
-                    activeSelectionHandle = SelectionHandle(rawValue: i)
-                    isResizingSelection = true
-                    resizeStartPoint = point
-                    originalSelectionRect = rect
-                    originalSelectedImage = selectedImage
-                    return
-                }
+        // --- Selection handle hit-test first (unchanged) ---
+        if let rect = selectionRect
+            ?? (selectedImage != nil ? NSRect(origin: selectedImageOrigin ?? .zero, size: selectedImage!.size) : nil) {
+            for (i, handle) in selectionHandlePositions(rect: rect).enumerated() where handle.contains(point) {
+                saveUndoState()
+                activeSelectionHandle = SelectionHandle(rawValue: i)
+                isResizingSelection = true
+                resizeStartPoint = point
+                originalSelectionRect = rect
+                originalSelectedImage = selectedImage
+                return
             }
         }
 
-        // === Canvas border/corner detection (zoom- & gutter-safe) ===
-        // Use VIEW-SPACE hit test when zoomed; CANVAS-SPACE otherwise.
+        // --- ✅ Canvas border/corner hit-test BEFORE any tool logic (including Pencil) ---
         if let h = (isZoomed ? resizeHandleHit(atViewPoint: viewPt) : resizeHandle(at: point, generous: true)) {
             saveUndoState()
             activeResizeHandle = h
             isResizingCanvas = true
-            dragStartPoint = point              // keep a canvas-space copy
-            dragStartViewPoint = viewPt         // and a view-space copy for precise deltas under zoom
+            dragStartPoint = point              // canvas-space copy
+            dragStartViewPoint = viewPt         // view-space copy (precise under zoom)
             initialCanvasRect = canvasRect
             beginScrollFreezeIfNeeded()
             return
@@ -913,6 +898,16 @@ class CanvasView: NSView {
         }
 
         initializeCanvasIfNeeded()
+
+        // --- Pencil after resize hit-tests so edges can be grabbed while Pencil is active ---
+        if currentTool == .pencil {
+            saveUndoState()
+            if let px = imagePixel(from: viewPt) {
+                lastPencilPixel = px
+                drawPencilSegment(from: px, to: px, color: primaryColour)
+            }
+            return
+        }
 
         switch currentTool {
         case .select:
@@ -980,20 +975,8 @@ class CanvasView: NSView {
             isDrawingShape = true
 
         case .zoom:
-            // If this click is on/near a border or corner, treat it as a resize instead of toggling zoom.
-            if let h = (isZoomed ? resizeHandleHit(atViewPoint: viewPt) : resizeHandle(at: point, generous: true)) {
-                saveUndoState()
-                activeResizeHandle = h
-                isResizingCanvas = true
-                dragStartPoint = point
-                dragStartViewPoint = viewPt
-                initialCanvasRect = canvasRect
-                beginScrollFreezeIfNeeded()
-                return
-            }
-
+            // If already zoomed, exit; otherwise enter zoom to selected preview box
             if isZoomed {
-                // Exit zoom
                 isZoomed = false
                 zoomScale = 1.0
                 zoomPreviewRect = nil
@@ -1001,7 +984,6 @@ class CanvasView: NSView {
                 constrainClipViewBoundsNow()
                 needsDisplay = true
             } else {
-                // Enter zoom
                 let p  = convert(event.locationInWindow, from: nil)
                 let zr = zoomPreviewRect ?? NSRect(x: p.x - 64, y: p.y - 64, width: 128, height: 128)
 
@@ -1031,23 +1013,12 @@ class CanvasView: NSView {
     }
     
     override func mouseDragged(with event: NSEvent) {
-        let viewPt = convert(event.locationInWindow, from: nil)      // VIEW space
-        let point  = convertZoomedPointToCanvas(viewPt)               // CANVAS space
+        let viewPt = convert(event.locationInWindow, from: nil)   // VIEW space
+        let point  = convertZoomedPointToCanvas(viewPt)           // CANVAS space
         let shiftPressed = event.modifierFlags.contains(.shift)
         emitStatusUpdate(cursor: point)
 
-        // === Pixel-perfect paths for Pencil ===
-        let p = convert(event.locationInWindow, from: nil)
-        if currentTool == .pencil {
-            guard let prev = lastPencilPixel, let cur = imagePixel(from: p) else { return }
-            if prev != cur {
-                drawPencilSegment(from: prev, to: cur, color: primaryColour)
-                lastPencilPixel = cur
-            }
-            return
-        }
-
-        // Selection resizing (unchanged)
+        // --- Selection resizing (unchanged order) ---
         if isResizingSelection, let handle = activeSelectionHandle {
             var newRect = originalSelectionRect
             let dx = point.x - resizeStartPoint.x
@@ -1090,11 +1061,11 @@ class CanvasView: NSView {
             return
         }
 
-        // Canvas resize preview (zoomed or not): keep scroll origin pinned on EVERY drag tick.
+        // --- ✅ Canvas resize preview BEFORE any tool-specific work (incl. Pencil) ---
         if isResizingCanvas, let handle = activeResizeHandle {
             var newRect = initialCanvasRect
 
-            // ✅ Compute deltas in VIEW space, then convert once to canvas units when zoomed.
+            // Compute deltas in VIEW space; convert once when zoomed
             let dxV = viewPt.x - dragStartViewPoint.x
             let dyV = viewPt.y - dragStartViewPoint.y
             let dx  = isZoomed ? (dxV / zoomScaleSafe) : dxV
@@ -1134,13 +1105,22 @@ class CanvasView: NSView {
             canvasRect = newRect
             needsDisplay = true
 
-            // 🔒 keep scrollbars frozen while dragging
+            // Keep scrollbars frozen while dragging
             maintainScrollFreeze()
-
             return
         }
 
-        // Dragging selection (unchanged)
+        // --- Pencil stroke path AFTER resize handling ---
+        let p = convert(event.locationInWindow, from: nil)
+        if currentTool == .pencil {
+            if let prev = lastPencilPixel, let cur = imagePixel(from: p), prev != cur {
+                drawPencilSegment(from: prev, to: cur, color: primaryColour)
+                lastPencilPixel = cur
+            }
+            return
+        }
+
+        // --- Existing dragging logic for other tools (unchanged) ---
         if isDraggingSelection,
            let startPoint = selectionDragStartPoint,
            let imageOrigin = selectionImageStartOrigin,
@@ -1154,7 +1134,6 @@ class CanvasView: NSView {
             return
         }
 
-        // Tools (unchanged behaviour for non-pixel tools)
         switch currentTool {
         case .select:
             if !isPastingImage {
@@ -1206,15 +1185,9 @@ class CanvasView: NSView {
         }
     }
     
+    // CanvasView.swift
     override func mouseUp(with event: NSEvent) {
-        // End pixel-perfect strokes
-        if currentTool == .pencil {
-            lastPencilPixel = nil
-            return
-        }
-
-        if currentTool != .zoom { zoomPreviewRect = nil }
-
+        // --- ✅ Commit canvas resize BEFORE any tool-specific early returns ---
         if isResizingCanvas {
             isResizingCanvas = false
             let handleUsed = activeResizeHandle
@@ -1224,7 +1197,7 @@ class CanvasView: NSView {
             // Stop freezing BEFORE any deferred scrolling we do next.
             endScrollFreeze()
 
-            // Optional: after commit, keep the anchor corner visible
+            // Keep the anchor corner visible (your existing async scrollToVisibleSafe block)
             if let sv = enclosingScrollView {
                 DispatchQueue.main.async { [weak self, weak sv] in
                     guard let self = self, let _ = sv else { return }
@@ -1232,7 +1205,6 @@ class CanvasView: NSView {
                     let w = self.canvasRect.width
                     let h = self.canvasRect.height
 
-                    // Choose the anchor in *canvas* coords
                     let canvasAnchor: NSRect
                     switch handleUsed {
                     case .topRight?:     canvasAnchor = NSRect(x: w - 1, y: h - 1, width: 1, height: 1)
@@ -1246,16 +1218,12 @@ class CanvasView: NSView {
                     default:             canvasAnchor = NSRect(x: 0,      y: 0,      width: 1, height: 1)
                     }
 
-                    // Convert to *view* coords if zoomed
-                    let target: NSRect
-                    if self.isZoomed {
-                        target = NSRect(x: canvasAnchor.origin.x * self.zoomScale,
-                                        y: canvasAnchor.origin.y * self.zoomScale,
-                                        width:  canvasAnchor.size.width  * self.zoomScale,
-                                        height: canvasAnchor.size.height * self.zoomScale)
-                    } else {
-                        target = canvasAnchor
-                    }
+                    let target: NSRect = self.isZoomed
+                        ? NSRect(x: canvasAnchor.origin.x * self.zoomScale,
+                                 y: canvasAnchor.origin.y * self.zoomScale,
+                                 width:  canvasAnchor.size.width  * self.zoomScale,
+                                 height: canvasAnchor.size.height * self.zoomScale)
+                        : canvasAnchor
 
                     self.scrollToVisibleSafe(target)
                 }
@@ -1264,6 +1232,14 @@ class CanvasView: NSView {
             needsDisplay = true
             return
         }
+
+        // Pencil cleanup after resize commit
+        if currentTool == .pencil {
+            lastPencilPixel = nil
+            return
+        }
+
+        if currentTool != .zoom { zoomPreviewRect = nil }
 
         if isResizingSelection {
             isResizingSelection = false
@@ -1324,10 +1300,10 @@ class CanvasView: NSView {
                 needsDisplay = true
             }
             currentPath = nil
+
         case .select:
             guard let rect = selectionRect else { return }
             let src = imgRect(rect)
-
             let image = NSImage(size: rect.size)
             image.lockFocus()
             canvasImage?.draw(in: NSRect(origin: .zero, size: rect.size),
@@ -1337,7 +1313,6 @@ class CanvasView: NSView {
                               respectFlipped: true,
                               hints: [.interpolation: NSImageInterpolation.none])
             image.unlockFocus()
-
             selectedImage = image
             selectedImageOrigin = rect.origin
             clearedOriginalAreaForCurrentSelection = false
@@ -1360,12 +1335,9 @@ class CanvasView: NSView {
                 canvasImage?.lockFocus()
                 currentColour.set()
                 let b = max(1, toolSize)
-
-                // ✅ build rect in canvas space, then convert to image space
                 let rCanvas = NSRect(x: startPoint.x - b/2, y: startPoint.y - b/2, width: b, height: b)
                 let rImg = imgRect(rCanvas)
                 NSBezierPath(ovalIn: rImg).fill()
-
                 canvasImage?.unlockFocus()
                 needsDisplay = true
             }
@@ -1413,11 +1385,8 @@ class CanvasView: NSView {
                 curvePhase = 2
             case 2:
                 control2 = pt
-
-                // Same effective logic as preview
                 let c1Eff = control1
                 let c2Eff = (pointsAreEqual(control2, curveEnd) ? curveEnd : control2)
-
                 let path = NSBezierPath()
                 path.move(to: curveStart)
                 path.curve(to: curveEnd, controlPoint1: c1Eff, controlPoint2: c2Eff)
@@ -1433,7 +1402,6 @@ class CanvasView: NSView {
                 canvasImage?.unlockFocus()
                 drawnPaths.append((path: translated.copy() as! NSBezierPath, colour: currentColour))
 
-                // Reset curve state
                 curvePhase = 0
                 curveStart = .zero; curveEnd = .zero
                 control1 = .zero;   control2 = .zero
